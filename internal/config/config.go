@@ -13,14 +13,20 @@ import (
 
 const maxTimeout = 5 * time.Minute
 
+// maxBodyBytes bounds request and response byte caps to a value safe for a
+// memory-constrained host, matching the maxTimeout sanity bound above.
+const maxBodyBytes = 64 * 1024 * 1024
+
 // Values is the complete typed runtime configuration.
 type Values struct {
-	UpstreamURL     string
-	ListenAddress   string
-	UpstreamTimeout time.Duration
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
+	UpstreamURL      string
+	ListenAddress    string
+	UpstreamTimeout  time.Duration
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	IdleTimeout      time.Duration
+	MaxRequestBytes  int64
+	MaxResponseBytes int64
 }
 
 // Load reads required settings using getenv and validates them before startup.
@@ -64,6 +70,20 @@ func Load(getenv func(string) string) (Values, error) {
 			return Values{}, fmt.Errorf("%s must be a positive duration no greater than %s", item.name, maxTimeout)
 		}
 		*item.target = duration
+	}
+
+	for _, item := range []struct {
+		name   string
+		target *int64
+	}{
+		{"MCP_GATEWAY_MAX_REQUEST_BYTES", &values.MaxRequestBytes},
+		{"MCP_GATEWAY_MAX_RESPONSE_BYTES", &values.MaxResponseBytes},
+	} {
+		value, err := strconv.ParseInt(strings.TrimSpace(getenv(item.name)), 10, 64)
+		if err != nil || value <= 0 || value > maxBodyBytes {
+			return Values{}, fmt.Errorf("%s must be a positive byte count no greater than %d", item.name, maxBodyBytes)
+		}
+		*item.target = value
 	}
 	return values, nil
 }

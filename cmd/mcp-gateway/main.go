@@ -23,9 +23,11 @@ func main() {
 		os.Exit(1)
 	}
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     cfg.UpstreamURL,
-		UpstreamTimeout: cfg.UpstreamTimeout,
-		Logger:          logger,
+		UpstreamURL:      cfg.UpstreamURL,
+		UpstreamTimeout:  cfg.UpstreamTimeout,
+		MaxRequestBytes:  cfg.MaxRequestBytes,
+		MaxResponseBytes: cfg.MaxResponseBytes,
+		Logger:           logger,
 	})
 	if err != nil {
 		logger.Error("initialize gateway", "error", err)

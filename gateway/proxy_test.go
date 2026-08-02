@@ -24,9 +24,11 @@ func TestProxyPreservesAbsentUpstreamContentType(t *testing.T) {
 	}))
 	defer upstream.Close()
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -65,9 +67,11 @@ func TestProxyForwardsEndToEndMCPHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -97,9 +101,11 @@ func TestNewRejectsUpstreamURLWithoutHostname(t *testing.T) {
 	t.Parallel()
 
 	_, err := gateway.New(gateway.Config{
-		UpstreamURL:     "http://:8080/mcp",
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      "http://:8080/mcp",
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err == nil {
 		t.Fatal("New accepted upstream URL without hostname")
@@ -110,9 +116,11 @@ func TestNewRejectsUpstreamURLCredentials(t *testing.T) {
 	t.Parallel()
 
 	_, err := gateway.New(gateway.Config{
-		UpstreamURL:     "https://user:password@example.com/mcp",
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      "https://user:password@example.com/mcp",
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err == nil {
 		t.Fatal("New accepted upstream URL credentials")
@@ -141,9 +149,11 @@ func TestProxyPreservesCompressedUpstreamBodyBytes(t *testing.T) {
 	}))
 	defer upstream.Close()
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -177,9 +187,11 @@ func TestProxyReturnsUpstreamRedirectWithoutFollowingIt(t *testing.T) {
 	}))
 	defer upstream.Close()
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -210,9 +222,11 @@ func TestProxyWritesPayloadSafeStructuredLog(t *testing.T) {
 	defer upstream.Close()
 	var logs bytes.Buffer
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(&logs, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -252,9 +266,11 @@ func TestProxyPreservesValidRequestID(t *testing.T) {
 	defer upstream.Close()
 
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -281,9 +297,11 @@ func TestProxyGeneratesRequestIDWhenInboundIDIsUnsafe(t *testing.T) {
 	defer upstream.Close()
 
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -312,9 +330,11 @@ func TestHealthEndpointReportsHealthyWithoutCallingUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -351,9 +371,11 @@ func TestProxyPreservesRequestContentLength(t *testing.T) {
 	}))
 	defer upstream.Close()
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -392,9 +414,11 @@ func TestProxyForwardsJSONRPCRequestAndResponse(t *testing.T) {
 	defer upstream.Close()
 
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:     upstream.URL,
-		UpstreamTimeout: time.Second,
-		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		UpstreamURL:      upstream.URL,
+		UpstreamTimeout:  time.Second,
+		MaxRequestBytes:  1 << 20,
+		MaxResponseBytes: 1 << 20,
+		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)

@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 15 milestone provides a transparent upstream proxy, correlation IDs, typed startup configuration, a health endpoint, and payload-safe structured logs.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 16 milestone adds bounded request/response transport, cancellation propagation, and deterministic failure mapping to the transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
 
 ## Quickstart
 
@@ -13,6 +13,8 @@ export MCP_GATEWAY_UPSTREAM_TIMEOUT=10s
 export MCP_GATEWAY_READ_TIMEOUT=10s
 export MCP_GATEWAY_WRITE_TIMEOUT=15s
 export MCP_GATEWAY_IDLE_TIMEOUT=60s
+export MCP_GATEWAY_MAX_REQUEST_BYTES=1048576
+export MCP_GATEWAY_MAX_RESPONSE_BYTES=4194304
 go run ./cmd/mcp-gateway
 ```
 
@@ -40,7 +42,7 @@ curl -i http://127.0.0.1:8080/healthz
 
 A valid inbound `X-Request-ID` (`A-Z`, `a-z`, digits, `.`, `_`, or `-`; at most 128 characters) is preserved. Missing or unsafe IDs are replaced with a cryptographically random ID. The selected ID is sent upstream and returned to the client.
 
-Other methods return `405`; unknown paths return `404`. Upstream transport failures produce a bounded generic `502` or `504` response rather than reflecting upstream error details.
+Other methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads or upstream diagnostics.
 
 ## Configuration
 
@@ -54,12 +56,14 @@ Every setting is required and validated before the listener starts. Durations us
 | `MCP_GATEWAY_READ_TIMEOUT` | Client request and header read timeout. |
 | `MCP_GATEWAY_WRITE_TIMEOUT` | Client response write timeout. |
 | `MCP_GATEWAY_IDLE_TIMEOUT` | Keep-alive idle timeout. |
+| `MCP_GATEWAY_MAX_REQUEST_BYTES` | Maximum inbound MCP request body in bytes (1–67,108,864). |
+| `MCP_GATEWAY_MAX_RESPONSE_BYTES` | Maximum upstream response body in bytes (1–67,108,864). |
 
 ## Observability and safety
 
 Logs are newline-delimited JSON emitted to stdout. Request completion records contain the request ID, HTTP method, path, status, and latency. Request and response payloads, authorization values, and URL credentials are never logged.
 
-The gateway currently exposes liveness rather than upstream readiness. Authentication, authorization, size caps, rate limiting, and audit chaining are planned later milestones; do not expose this Day 15 build directly to an untrusted network.
+The gateway currently exposes liveness rather than upstream readiness. Authentication, authorization, rate limiting, and audit chaining are planned later milestones; do not expose this Day 16 build directly to an untrusted network. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
 
 ## Architecture
 
