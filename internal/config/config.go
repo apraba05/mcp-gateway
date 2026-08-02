@@ -2,6 +2,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -27,6 +29,13 @@ type Values struct {
 	IdleTimeout      time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
+	APIKeys          []APIKey
+}
+
+// APIKey is a safe client identifier and a SHA-256 digest of its raw key.
+type APIKey struct {
+	ID     string
+	SHA256 [sha256.Size]byte
 }
 
 // Load reads required settings using getenv and validates them before startup.
@@ -85,5 +94,61 @@ func Load(getenv func(string) string) (Values, error) {
 		}
 		*item.target = value
 	}
+	apiKeys, err := parseAPIKeys(strings.TrimSpace(getenv("MCP_GATEWAY_API_KEYS")))
+	if err != nil {
+		return Values{}, err
+	}
+	values.APIKeys = apiKeys
 	return values, nil
+}
+
+func parseAPIKeys(value string) ([]APIKey, error) {
+	if value == "" {
+		return nil, errors.New("MCP_GATEWAY_API_KEYS must contain at least one hashed API key")
+	}
+	entries := strings.Split(value, ",")
+	if len(entries) > 1000 {
+		return nil, errors.New("MCP_GATEWAY_API_KEYS supports at most 1000 entries")
+	}
+	keys := make([]APIKey, 0, len(entries))
+	seenIDs := make(map[string]struct{}, len(entries))
+	seenHashes := make(map[[sha256.Size]byte]struct{}, len(entries))
+	var zeroHash [sha256.Size]byte
+	for _, entry := range entries {
+		identifier, digestText, found := strings.Cut(entry, "=")
+		if !found || !validAPIKeyIdentifier(identifier) || len(digestText) != sha256.Size*2 {
+			return nil, errors.New("MCP_GATEWAY_API_KEYS entries must use safe-id=64-character-sha256-hex")
+		}
+		digestBytes, err := hex.DecodeString(digestText)
+		if err != nil {
+			return nil, errors.New("MCP_GATEWAY_API_KEYS entries must use safe-id=64-character-sha256-hex")
+		}
+		var digest [sha256.Size]byte
+		copy(digest[:], digestBytes)
+		if digest == zeroHash {
+			return nil, errors.New("MCP_GATEWAY_API_KEYS hashes must not be all zeroes")
+		}
+		if _, exists := seenIDs[identifier]; exists {
+			return nil, errors.New("MCP_GATEWAY_API_KEYS identifiers must be unique")
+		}
+		if _, exists := seenHashes[digest]; exists {
+			return nil, errors.New("MCP_GATEWAY_API_KEYS hashes must be unique")
+		}
+		seenIDs[identifier] = struct{}{}
+		seenHashes[digest] = struct{}{}
+		keys = append(keys, APIKey{ID: identifier, SHA256: digest})
+	}
+	return keys, nil
+}
+
+func validAPIKeyIdentifier(value string) bool {
+	if len(value) < 1 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '.' && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
 }

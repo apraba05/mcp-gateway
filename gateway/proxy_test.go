@@ -23,7 +23,7 @@ func TestProxyPreservesAbsentUpstreamContentType(t *testing.T) {
 		_, _ = io.WriteString(w, "body without content type")
 	}))
 	defer upstream.Close()
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -66,7 +66,7 @@ func TestProxyForwardsEndToEndMCPHeaders(t *testing.T) {
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	defer upstream.Close()
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -100,7 +100,7 @@ func TestProxyForwardsEndToEndMCPHeaders(t *testing.T) {
 func TestNewRejectsUpstreamURLWithoutHostname(t *testing.T) {
 	t.Parallel()
 
-	_, err := gateway.New(gateway.Config{
+	_, err := newTestGateway(gateway.Config{
 		UpstreamURL:      "http://:8080/mcp",
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -115,7 +115,7 @@ func TestNewRejectsUpstreamURLWithoutHostname(t *testing.T) {
 func TestNewRejectsUpstreamURLCredentials(t *testing.T) {
 	t.Parallel()
 
-	_, err := gateway.New(gateway.Config{
+	_, err := newTestGateway(gateway.Config{
 		UpstreamURL:      "https://user:password@example.com/mcp",
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -148,7 +148,7 @@ func TestProxyPreservesCompressedUpstreamBodyBytes(t *testing.T) {
 		_, _ = w.Write(expected)
 	}))
 	defer upstream.Close()
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -186,7 +186,7 @@ func TestProxyReturnsUpstreamRedirectWithoutFollowingIt(t *testing.T) {
 		_, _ = io.WriteString(w, "upstream redirect")
 	}))
 	defer upstream.Close()
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -221,7 +221,7 @@ func TestProxyWritesPayloadSafeStructuredLog(t *testing.T) {
 	}))
 	defer upstream.Close()
 	var logs bytes.Buffer
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -241,14 +241,14 @@ func TestProxyWritesPayloadSafeStructuredLog(t *testing.T) {
 	if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
 		t.Fatalf("decode structured log %q: %v", logs.String(), err)
 	}
-	if entry["request_id"] != "log-request-1" || entry["method"] != http.MethodPost || entry["path"] != "/mcp" {
+	if entry["request_id"] != "log-request-1" || entry["client_id"] != "legacy-test-client" || entry["method"] != http.MethodPost || entry["path"] != "/mcp" {
 		t.Errorf("log fields = %#v", entry)
 	}
 	if entry["status"] != float64(http.StatusOK) {
 		t.Errorf("logged status = %#v, want 200", entry["status"])
 	}
-	if bytes.Contains(logs.Bytes(), []byte("must-not-be-logged")) {
-		t.Fatal("structured log contains request payload")
+	if bytes.Contains(logs.Bytes(), []byte("must-not-be-logged")) || bytes.Contains(logs.Bytes(), []byte(legacyTestAPIKey)) {
+		t.Fatal("structured log contains request payload or API key")
 	}
 }
 
@@ -265,7 +265,7 @@ func TestProxyPreservesValidRequestID(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -296,7 +296,7 @@ func TestProxyGeneratesRequestIDWhenInboundIDIsUnsafe(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -334,11 +334,13 @@ func TestHealthEndpointReportsHealthyWithoutCallingUpstream(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		APIKeys:          testAPIKeys(),
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
+	// Liveness intentionally remains usable without a client credential.
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	response := httptest.NewRecorder()
 
@@ -370,7 +372,7 @@ func TestProxyPreservesRequestContentLength(t *testing.T) {
 		_, _ = w.Write(upstreamBody)
 	}))
 	defer upstream.Close()
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
@@ -413,7 +415,7 @@ func TestProxyForwardsJSONRPCRequestAndResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler, err := gateway.New(gateway.Config{
+	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL:      upstream.URL,
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,

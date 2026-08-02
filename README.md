@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 16 milestone adds bounded request/response transport, cancellation propagation, and deterministic failure mapping to the transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 17 milestone adds deny-by-default hashed API-key authentication and safe client identifiers to the bounded transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
 
 ## Quickstart
 
@@ -15,16 +15,21 @@ export MCP_GATEWAY_WRITE_TIMEOUT=15s
 export MCP_GATEWAY_IDLE_TIMEOUT=60s
 export MCP_GATEWAY_MAX_REQUEST_BYTES=1048576
 export MCP_GATEWAY_MAX_RESPONSE_BYTES=4194304
+# Store only a SHA-256 digest in gateway configuration. Use a high-entropy key.
+read -rsp 'Gateway API key: ' MCP_CLIENT_KEY; echo
+export MCP_GATEWAY_API_KEYS="local-demo=$(printf %s "$MCP_CLIENT_KEY" | sha256sum | cut -d' ' -f1)"
 go run ./cmd/mcp-gateway
 ```
 
 Send an MCP JSON-RPC request:
 
 ```bash
-curl -i http://127.0.0.1:8080/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'X-Request-ID: demo-1' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+printf '%s\n' \
+  "header = \"X-MCP-Gateway-Key: $MCP_CLIENT_KEY\"" \
+  'header = "Content-Type: application/json"' \
+  'header = "X-Request-ID: demo-1"' \
+  'data = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"' \
+  | curl -i --config - http://127.0.0.1:8080/mcp
 ```
 
 Check process health without contacting the upstream:
@@ -37,12 +42,12 @@ curl -i http://127.0.0.1:8080/healthz
 
 | Endpoint | Method | Behavior |
 | --- | --- | --- |
-| `/mcp` | `POST` | Forwards the body and end-to-end MCP headers to the configured upstream, then preserves its status, end-to-end headers, and body. Hop-by-hop HTTP headers are removed. |
-| `/healthz` | `GET` | Returns `200` and `{"status":"ok"}` when the gateway process is serving. |
+| `/mcp` | `POST` | Requires a valid `X-MCP-Gateway-Key`, then forwards the body and end-to-end MCP headers to the configured upstream and preserves its response. The gateway credential and hop-by-hop HTTP headers are removed. |
+| `/healthz` | `GET` | Returns `200` and `{"status":"ok"}` without a client credential when the gateway process is serving. |
 
 A valid inbound `X-Request-ID` (`A-Z`, `a-z`, digits, `.`, `_`, or `-`; at most 128 characters) is preserved. Missing or unsafe IDs are replaced with a cryptographically random ID. The selected ID is sent upstream and returned to the client.
 
-Other methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads or upstream diagnostics.
+Missing, invalid, empty, whitespace-only, ambiguous repeated/comma-joined, and over-256-byte gateway keys return a generic `401` without an upstream call. Other methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads, credentials, or upstream diagnostics.
 
 ## Configuration
 
@@ -58,12 +63,15 @@ Every setting is required and validated before the listener starts. Durations us
 | `MCP_GATEWAY_IDLE_TIMEOUT` | Keep-alive idle timeout. |
 | `MCP_GATEWAY_MAX_REQUEST_BYTES` | Maximum inbound MCP request body in bytes (1–67,108,864). |
 | `MCP_GATEWAY_MAX_RESPONSE_BYTES` | Maximum upstream response body in bytes (1–67,108,864). |
+| `MCP_GATEWAY_API_KEYS` | Required comma-separated `safe-client-id=sha256-hex` entries. IDs use 1–64 letters, digits, `.`, `_`, or `-`; IDs and hashes must be unique; at most 1,000 entries. |
 
 ## Observability and safety
 
-Logs are newline-delimited JSON emitted to stdout. Request completion records contain the request ID, HTTP method, path, status, and latency. Request and response payloads, authorization values, and URL credentials are never logged.
+Logs are newline-delimited JSON emitted to stdout. Successful request completion records contain the safe client ID, request ID, HTTP method, path, status, and latency. Authentication failures use a fixed reason and never log the presented credential. Request and response payloads, authorization values, gateway keys, and URL credentials are never logged.
 
-The gateway currently exposes liveness rather than upstream readiness. Authentication, authorization, rate limiting, and audit chaining are planned later milestones; do not expose this Day 16 build directly to an untrusted network. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
+Use independently generated high-entropy API keys: plain SHA-256 digests do not protect weak, guessable secrets from offline guessing. Restrict access to the configuration environment because its hashes are authentication material. The quickstart supplies curl's credential header through standard input rather than exposing the raw key in curl's process arguments.
+
+The gateway currently exposes liveness rather than upstream readiness. Per-tool authorization, rate limiting, and audit chaining are planned later milestones. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
 
 ## Architecture
 

@@ -27,6 +27,7 @@ func main() {
 		UpstreamTimeout:  cfg.UpstreamTimeout,
 		MaxRequestBytes:  cfg.MaxRequestBytes,
 		MaxResponseBytes: cfg.MaxResponseBytes,
+		APIKeys:          gatewayAPIKeys(cfg.APIKeys),
 		Logger:           logger,
 	})
 	if err != nil {
@@ -61,4 +62,12 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func gatewayAPIKeys(keys []config.APIKey) []gateway.APIKey {
+	converted := make([]gateway.APIKey, len(keys))
+	for index, key := range keys {
+		converted[index] = gateway.APIKey{ID: key.ID, SHA256: key.SHA256}
+	}
+	return converted
 }

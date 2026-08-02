@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -17,6 +19,7 @@ import (
 )
 
 var validRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var validAPIKeyID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // statusClientClosedRequest mirrors the widely used (non-standard) nginx
 // convention for a request whose client disconnected before completion.
@@ -42,7 +45,15 @@ type Config struct {
 	UpstreamTimeout  time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
+	APIKeys          []APIKey
 	Logger           *slog.Logger
+}
+
+// APIKey identifies a client without retaining its raw credential. SHA256 is
+// the SHA-256 digest of the value clients send in X-MCP-Gateway-Key.
+type APIKey struct {
+	ID     string
+	SHA256 [sha256.Size]byte
 }
 
 type handler struct {
@@ -50,6 +61,7 @@ type handler struct {
 	client           *http.Client
 	maxRequestBytes  int64
 	maxResponseBytes int64
+	apiKeys          []APIKey
 	logger           *slog.Logger
 }
 
@@ -71,6 +83,31 @@ func New(cfg Config) (http.Handler, error) {
 	if cfg.Logger == nil {
 		return nil, errors.New("logger is required")
 	}
+	if len(cfg.APIKeys) == 0 {
+		return nil, errors.New("at least one hashed API key is required")
+	}
+	if len(cfg.APIKeys) > 1000 {
+		return nil, errors.New("at most 1000 API keys are supported")
+	}
+	seenKeyIDs := make(map[string]struct{}, len(cfg.APIKeys))
+	seenKeyHashes := make(map[[sha256.Size]byte]struct{}, len(cfg.APIKeys))
+	var zeroHash [sha256.Size]byte
+	for _, key := range cfg.APIKeys {
+		if !validAPIKeyID.MatchString(key.ID) {
+			return nil, errors.New("API key identifier must contain only letters, digits, dot, underscore, or hyphen and be at most 64 characters")
+		}
+		if key.SHA256 == zeroHash {
+			return nil, errors.New("API key hash must not be all zeroes")
+		}
+		if _, exists := seenKeyIDs[key.ID]; exists {
+			return nil, errors.New("API key identifiers must be unique")
+		}
+		if _, exists := seenKeyHashes[key.SHA256]; exists {
+			return nil, errors.New("API key hashes must be unique")
+		}
+		seenKeyIDs[key.ID] = struct{}{}
+		seenKeyHashes[key.SHA256] = struct{}{}
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
 	return &handler{
@@ -84,6 +121,7 @@ func New(cfg Config) (http.Handler, error) {
 		},
 		maxRequestBytes:  cfg.MaxRequestBytes,
 		maxResponseBytes: cfg.MaxResponseBytes,
+		apiKeys:          append([]APIKey(nil), cfg.APIKeys...),
 		logger:           cfg.Logger,
 	}, nil
 }
@@ -122,6 +160,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 
 	started := time.Now()
+	clientID, authenticated := h.authenticate(r.Header.Values("X-MCP-Gateway-Key"))
+	if len(h.apiKeys) > 0 && !authenticated {
+		h.writeError(w, r, requestID, started, http.StatusUnauthorized, "authentication_failed")
+		return
+	}
 
 	if r.ContentLength > h.maxRequestBytes {
 		h.writeError(w, r, requestID, started, http.StatusRequestEntityTooLarge, "request_too_large")
@@ -144,6 +187,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyEndToEndHeaders(upstreamRequest.Header, r.Header)
+	upstreamRequest.Header.Del("X-MCP-Gateway-Key")
 	upstreamRequest.Header.Set("X-Request-ID", requestID)
 
 	response, err := h.client.Do(upstreamRequest)
@@ -174,7 +218,28 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(responseBody); err != nil {
 		h.logger.Error("write gateway response", "request_id", requestID, "reason", "client_write_failed")
 	}
-	h.logger.Info("mcp request completed", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", response.StatusCode, "latency_ms", time.Since(started).Milliseconds())
+	h.logger.Info("mcp request completed", "request_id", requestID, "client_id", clientID, "method", r.Method, "path", r.URL.Path, "status", response.StatusCode, "latency_ms", time.Since(started).Milliseconds())
+}
+
+func (h *handler) authenticate(values []string) (string, bool) {
+	if len(values) != 1 {
+		return "", false
+	}
+	raw := values[0]
+	if len(raw) > 256 || strings.Contains(raw, ",") {
+		return "", false
+	}
+	digest := sha256.Sum256([]byte(raw))
+	matchedID := ""
+	matched := 0
+	for _, key := range h.apiKeys {
+		equal := subtle.ConstantTimeCompare(digest[:], key.SHA256[:])
+		if equal == 1 {
+			matchedID = key.ID
+		}
+		matched |= equal
+	}
+	return matchedID, matched == 1 && strings.TrimSpace(raw) != ""
 }
 
 // writeError logs a bounded, deterministic diagnostic and sends a generic

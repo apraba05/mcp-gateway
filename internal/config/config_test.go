@@ -1,11 +1,55 @@
 package config_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/apraba05/mcp-gateway/internal/config"
 )
+
+func TestLoadParsesHashedAPIKeysAndRejectsPlaintextOrUnsafeIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	first := sha256.Sum256([]byte("first-secret"))
+	second := sha256.Sum256([]byte("second-secret"))
+	base := map[string]string{
+		"MCP_GATEWAY_UPSTREAM_URL":       "http://127.0.0.1:9000/mcp",
+		"MCP_GATEWAY_LISTEN_ADDRESS":     "127.0.0.1:8080",
+		"MCP_GATEWAY_UPSTREAM_TIMEOUT":   "3s",
+		"MCP_GATEWAY_READ_TIMEOUT":       "5s",
+		"MCP_GATEWAY_WRITE_TIMEOUT":      "7s",
+		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
+		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
+		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
+	}
+	base["MCP_GATEWAY_API_KEYS"] = "client-a=" + hex.EncodeToString(first[:]) + ",client_b=" + hex.EncodeToString(second[:])
+
+	values, err := config.Load(func(key string) string { return base[key] })
+	if err != nil {
+		t.Fatalf("load valid API keys: %v", err)
+	}
+	if len(values.APIKeys) != 2 || values.APIKeys[0].ID != "client-a" || values.APIKeys[0].SHA256 != first || values.APIKeys[1].ID != "client_b" || values.APIKeys[1].SHA256 != second {
+		t.Fatalf("parsed API keys = %#v", values.APIKeys)
+	}
+
+	for _, invalid := range []string{"", "client-a=plaintext-secret", "unsafe id=" + hex.EncodeToString(first[:]), "client-a=" + hex.EncodeToString(first[:]) + ",client-a=" + hex.EncodeToString(second[:]), "client-zero=" + strings.Repeat("0", sha256.Size*2)} {
+		invalid := invalid
+		t.Run(invalid, func(t *testing.T) {
+			environment := make(map[string]string, len(base))
+			for key, value := range base {
+				environment[key] = value
+			}
+			environment["MCP_GATEWAY_API_KEYS"] = invalid
+			if _, err := config.Load(func(key string) string { return environment[key] }); err == nil {
+				t.Fatalf("Load accepted MCP_GATEWAY_API_KEYS=%q", invalid)
+			}
+		})
+	}
+}
 
 func TestLoadRejectsUpstreamURLWithoutHostname(t *testing.T) {
 	t.Parallel()
@@ -59,6 +103,7 @@ func TestLoadParsesTypedConfiguration(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
 	}
 
 	got, err := config.Load(func(key string) string { return environment[key] })
@@ -88,6 +133,7 @@ func TestLoadRejectsNonPositiveByteCaps(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
 	}
 
 	for _, testCase := range []struct {
