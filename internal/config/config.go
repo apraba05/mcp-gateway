@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const maxTimeout = 5 * time.Minute
+
+var validToolName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // maxBodyBytes bounds request and response byte caps to a value safe for a
 // memory-constrained host, matching the maxTimeout sanity bound above.
@@ -30,12 +33,22 @@ type Values struct {
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
 	APIKeys          []APIKey
+	ToolPolicies     []ToolPolicy
 }
 
 // APIKey is a safe client identifier and a SHA-256 digest of its raw key.
 type APIKey struct {
 	ID     string
 	SHA256 [sha256.Size]byte
+}
+
+// ToolPolicy grants or denies one authenticated client permission to invoke
+// one MCP tool by name via tools/call. Any (client, tool) pair without a
+// matching policy is denied by default.
+type ToolPolicy struct {
+	ClientID string
+	Tool     string
+	Allow    bool
 }
 
 // Load reads required settings using getenv and validates them before startup.
@@ -99,6 +112,12 @@ func Load(getenv func(string) string) (Values, error) {
 		return Values{}, err
 	}
 	values.APIKeys = apiKeys
+
+	toolPolicies, err := parseToolPolicies(strings.TrimSpace(getenv("MCP_GATEWAY_TOOL_POLICIES")), apiKeys)
+	if err != nil {
+		return Values{}, err
+	}
+	values.ToolPolicies = toolPolicies
 	return values, nil
 }
 
@@ -139,6 +158,54 @@ func parseAPIKeys(value string) ([]APIKey, error) {
 		keys = append(keys, APIKey{ID: identifier, SHA256: digest})
 	}
 	return keys, nil
+}
+
+// parseToolPolicies parses MCP_GATEWAY_TOOL_POLICIES entries of the form
+// client-id:tool=allow|deny. An empty value yields no policies, which denies
+// every tools/call by default without affecting other MCP methods.
+func parseToolPolicies(value string, apiKeys []APIKey) ([]ToolPolicy, error) {
+	if value == "" {
+		return nil, nil
+	}
+	knownClientIDs := make(map[string]struct{}, len(apiKeys))
+	for _, key := range apiKeys {
+		knownClientIDs[key.ID] = struct{}{}
+	}
+	entries := strings.Split(value, ",")
+	if len(entries) > 1000 {
+		return nil, errors.New("MCP_GATEWAY_TOOL_POLICIES supports at most 1000 entries")
+	}
+	policies := make([]ToolPolicy, 0, len(entries))
+	seen := make(map[[2]string]struct{}, len(entries))
+	for _, entry := range entries {
+		scope, effectText, found := strings.Cut(entry, "=")
+		if !found {
+			return nil, errors.New("MCP_GATEWAY_TOOL_POLICIES entries must use client-id:tool=allow|deny")
+		}
+		clientID, tool, found := strings.Cut(scope, ":")
+		if !found || !validAPIKeyIdentifier(clientID) || !validToolName.MatchString(tool) {
+			return nil, errors.New("MCP_GATEWAY_TOOL_POLICIES entries must use client-id:tool=allow|deny")
+		}
+		var allow bool
+		switch effectText {
+		case "allow":
+			allow = true
+		case "deny":
+			allow = false
+		default:
+			return nil, errors.New("MCP_GATEWAY_TOOL_POLICIES effect must be allow or deny")
+		}
+		if _, exists := knownClientIDs[clientID]; !exists {
+			return nil, errors.New("MCP_GATEWAY_TOOL_POLICIES client id must match a configured API key identifier")
+		}
+		key := [2]string{clientID, tool}
+		if _, exists := seen[key]; exists {
+			return nil, errors.New("MCP_GATEWAY_TOOL_POLICIES entries must be unique per client and tool")
+		}
+		seen[key] = struct{}{}
+		policies = append(policies, ToolPolicy{ClientID: clientID, Tool: tool, Allow: allow})
+	}
+	return policies, nil
 }
 
 func validAPIKeyIdentifier(value string) bool {

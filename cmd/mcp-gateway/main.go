@@ -28,6 +28,7 @@ func main() {
 		MaxRequestBytes:  cfg.MaxRequestBytes,
 		MaxResponseBytes: cfg.MaxResponseBytes,
 		APIKeys:          gatewayAPIKeys(cfg.APIKeys),
+		ToolPolicies:     gatewayToolPolicies(cfg.ToolPolicies),
 		Logger:           logger,
 	})
 	if err != nil {
@@ -68,6 +69,14 @@ func gatewayAPIKeys(keys []config.APIKey) []gateway.APIKey {
 	converted := make([]gateway.APIKey, len(keys))
 	for index, key := range keys {
 		converted[index] = gateway.APIKey{ID: key.ID, SHA256: key.SHA256}
+	}
+	return converted
+}
+
+func gatewayToolPolicies(policies []config.ToolPolicy) []gateway.ToolPolicy {
+	converted := make([]gateway.ToolPolicy, len(policies))
+	for index, policy := range policies {
+		converted[index] = gateway.ToolPolicy{ClientID: policy.ClientID, Tool: policy.Tool, Allow: policy.Allow}
 	}
 	return converted
 }

@@ -121,6 +121,90 @@ func TestLoadParsesTypedConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadParsesToolPoliciesAndRejectsInvalidEntries(t *testing.T) {
+	t.Parallel()
+
+	first := sha256.Sum256([]byte("first-secret"))
+	second := sha256.Sum256([]byte("second-secret"))
+	base := map[string]string{
+		"MCP_GATEWAY_UPSTREAM_URL":       "http://127.0.0.1:9000/mcp",
+		"MCP_GATEWAY_LISTEN_ADDRESS":     "127.0.0.1:8080",
+		"MCP_GATEWAY_UPSTREAM_TIMEOUT":   "3s",
+		"MCP_GATEWAY_READ_TIMEOUT":       "5s",
+		"MCP_GATEWAY_WRITE_TIMEOUT":      "7s",
+		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
+		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
+		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]) + ",client-b=" + hex.EncodeToString(second[:]),
+	}
+
+	base["MCP_GATEWAY_TOOL_POLICIES"] = "client-a:search=allow,client-a:delete=deny,client-b:search=allow"
+	values, err := config.Load(func(key string) string { return base[key] })
+	if err != nil {
+		t.Fatalf("load valid tool policies: %v", err)
+	}
+	want := []config.ToolPolicy{
+		{ClientID: "client-a", Tool: "search", Allow: true},
+		{ClientID: "client-a", Tool: "delete", Allow: false},
+		{ClientID: "client-b", Tool: "search", Allow: true},
+	}
+	if len(values.ToolPolicies) != len(want) {
+		t.Fatalf("tool policies = %#v", values.ToolPolicies)
+	}
+	for index, policy := range want {
+		if values.ToolPolicies[index] != policy {
+			t.Errorf("tool policy[%d] = %#v, want %#v", index, values.ToolPolicies[index], policy)
+		}
+	}
+
+	for _, invalid := range []string{
+		"client-a:search",                            // missing effect
+		"client-a:search=maybe",                      // unknown effect
+		"client-a=allow",                             // missing tool
+		"unsafe id:search=allow",                     // unsafe client id
+		"client-a:un safe=allow",                     // unsafe tool name
+		"client-a:search=allow,client-a:search=deny", // duplicate client+tool
+		"client-unknown:search=allow",                // client id not in API keys
+	} {
+		invalid := invalid
+		t.Run(invalid, func(t *testing.T) {
+			environment := make(map[string]string, len(base))
+			for key, value := range base {
+				environment[key] = value
+			}
+			environment["MCP_GATEWAY_TOOL_POLICIES"] = invalid
+			if _, err := config.Load(func(key string) string { return environment[key] }); err == nil {
+				t.Fatalf("Load accepted MCP_GATEWAY_TOOL_POLICIES=%q", invalid)
+			}
+		})
+	}
+}
+
+func TestLoadDefaultsToNoToolPoliciesWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	first := sha256.Sum256([]byte("first-secret"))
+	environment := map[string]string{
+		"MCP_GATEWAY_UPSTREAM_URL":       "http://127.0.0.1:9000/mcp",
+		"MCP_GATEWAY_LISTEN_ADDRESS":     "127.0.0.1:8080",
+		"MCP_GATEWAY_UPSTREAM_TIMEOUT":   "3s",
+		"MCP_GATEWAY_READ_TIMEOUT":       "5s",
+		"MCP_GATEWAY_WRITE_TIMEOUT":      "7s",
+		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
+		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
+		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]),
+	}
+
+	values, err := config.Load(func(key string) string { return environment[key] })
+	if err != nil {
+		t.Fatalf("load config without tool policies: %v", err)
+	}
+	if len(values.ToolPolicies) != 0 {
+		t.Fatalf("tool policies = %#v, want none", values.ToolPolicies)
+	}
+}
+
 func TestLoadRejectsNonPositiveByteCaps(t *testing.T) {
 	t.Parallel()
 

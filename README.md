@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 17 milestone adds deny-by-default hashed API-key authentication and safe client identifiers to the bounded transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 18 milestone adds deny-by-default per-client, per-tool authorization to hashed API-key authentication, the bounded transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
 
 ## Quickstart
 
@@ -18,6 +18,8 @@ export MCP_GATEWAY_MAX_RESPONSE_BYTES=4194304
 # Store only a SHA-256 digest in gateway configuration. Use a high-entropy key.
 read -rsp 'Gateway API key: ' MCP_CLIENT_KEY; echo
 export MCP_GATEWAY_API_KEYS="local-demo=$(printf %s "$MCP_CLIENT_KEY" | sha256sum | cut -d' ' -f1)"
+# Unlisted client/tool pairs and explicit deny entries cannot call upstream.
+export MCP_GATEWAY_TOOL_POLICIES='local-demo:weather.lookup=allow,local-demo:filesystem.delete=deny'
 go run ./cmd/mcp-gateway
 ```
 
@@ -42,16 +44,16 @@ curl -i http://127.0.0.1:8080/healthz
 
 | Endpoint | Method | Behavior |
 | --- | --- | --- |
-| `/mcp` | `POST` | Requires a valid `X-MCP-Gateway-Key`, then forwards the body and end-to-end MCP headers to the configured upstream and preserves its response. The gateway credential and hop-by-hop HTTP headers are removed. |
+| `/mcp` | `POST` | Requires a valid `X-MCP-Gateway-Key`. `tools/call` requests also require an explicit allow policy for that client and tool; other valid JSON-RPC methods pass through. Permitted requests preserve the body and end-to-end MCP headers. The gateway credential and hop-by-hop HTTP headers are removed. |
 | `/healthz` | `GET` | Returns `200` and `{"status":"ok"}` without a client credential when the gateway process is serving. |
 
 A valid inbound `X-Request-ID` (`A-Z`, `a-z`, digits, `.`, `_`, or `-`; at most 128 characters) is preserved. Missing or unsafe IDs are replaced with a cryptographically random ID. The selected ID is sent upstream and returned to the client.
 
-Missing, invalid, empty, whitespace-only, ambiguous repeated/comma-joined, and over-256-byte gateway keys return a generic `401` without an upstream call. Other methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads, credentials, or upstream diagnostics.
+Missing, invalid, empty, whitespace-only, ambiguous repeated/comma-joined, and over-256-byte gateway keys return a generic `401` without an upstream call. Explicitly denied and unlisted `tools/call` pairs return a generic `403`; malformed JSON, top-level JSON-RPC batch arrays (not currently supported), ambiguous duplicate JSON-RPC fields, and tool calls without one safe 1–128 character tool name return a generic `400`. These failures occur before the upstream call and do not reflect tool names, arguments, or credentials. Other HTTP methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads, credentials, or upstream diagnostics.
 
 ## Configuration
 
-Every setting is required and validated before the listener starts. Durations use Go syntax such as `500ms`, `10s`, or `1m` and must be positive and no greater than five minutes.
+All settings are validated before the listener starts. Every setting except `MCP_GATEWAY_TOOL_POLICIES` is required; omitting tool policies intentionally denies every `tools/call`. Durations use Go syntax such as `500ms`, `10s`, or `1m` and must be positive and no greater than five minutes.
 
 | Environment variable | Meaning |
 | --- | --- |
@@ -64,14 +66,15 @@ Every setting is required and validated before the listener starts. Durations us
 | `MCP_GATEWAY_MAX_REQUEST_BYTES` | Maximum inbound MCP request body in bytes (1–67,108,864). |
 | `MCP_GATEWAY_MAX_RESPONSE_BYTES` | Maximum upstream response body in bytes (1–67,108,864). |
 | `MCP_GATEWAY_API_KEYS` | Required comma-separated `safe-client-id=sha256-hex` entries. IDs use 1–64 letters, digits, `.`, `_`, or `-`; IDs and hashes must be unique; at most 1,000 entries. |
+| `MCP_GATEWAY_TOOL_POLICIES` | Optional comma-separated `client-id:tool=allow\|deny` entries. Client IDs must identify configured API keys; tool names use 1–128 letters, digits, `.`, `_`, or `-`; each client/tool pair is unique; at most 1,000 entries. Empty/unset means all `tools/call` requests are denied. |
 
 ## Observability and safety
 
-Logs are newline-delimited JSON emitted to stdout. Successful request completion records contain the safe client ID, request ID, HTTP method, path, status, and latency. Authentication failures use a fixed reason and never log the presented credential. Request and response payloads, authorization values, gateway keys, and URL credentials are never logged.
+Logs are newline-delimited JSON emitted to stdout. Successful request completion records contain the safe client ID, request ID, HTTP method, path, status, and latency. Authentication and authorization failures use fixed reason codes and never log the presented credential, tool name, or arguments. Request and response payloads, authorization values, gateway keys, and URL credentials are never logged.
 
 Use independently generated high-entropy API keys: plain SHA-256 digests do not protect weak, guessable secrets from offline guessing. Restrict access to the configuration environment because its hashes are authentication material. The quickstart supplies curl's credential header through standard input rather than exposing the raw key in curl's process arguments.
 
-The gateway currently exposes liveness rather than upstream readiness. Per-tool authorization, rate limiting, and audit chaining are planned later milestones. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
+The gateway currently exposes liveness rather than upstream readiness. Rate limiting and audit chaining are planned later milestones. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
 
 ## Architecture
 

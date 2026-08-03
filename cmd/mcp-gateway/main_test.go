@@ -7,6 +7,15 @@ import (
 	"github.com/apraba05/mcp-gateway/internal/config"
 )
 
+func TestGatewayToolPoliciesPreservesClientToolAndEffect(t *testing.T) {
+	t.Parallel()
+
+	got := gatewayToolPolicies([]config.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}})
+	if len(got) != 1 || got[0].ClientID != "client-a" || got[0].Tool != "search" || !got[0].Allow {
+		t.Fatalf("gateway tool policies = %#v", got)
+	}
+}
+
 func TestGatewayAPIKeysPreservesIdentifiersAndHashes(t *testing.T) {
 	t.Parallel()
 

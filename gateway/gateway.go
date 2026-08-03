@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 
 var validRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 var validAPIKeyID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+var validToolName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // statusClientClosedRequest mirrors the widely used (non-standard) nginx
 // convention for a request whose client disconnected before completion.
@@ -46,6 +48,7 @@ type Config struct {
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
 	APIKeys          []APIKey
+	ToolPolicies     []ToolPolicy
 	Logger           *slog.Logger
 }
 
@@ -56,12 +59,22 @@ type APIKey struct {
 	SHA256 [sha256.Size]byte
 }
 
+// ToolPolicy grants or denies one authenticated client permission to invoke
+// one MCP tool by name via tools/call. Any (client, tool) pair without a
+// matching policy is denied by default.
+type ToolPolicy struct {
+	ClientID string
+	Tool     string
+	Allow    bool
+}
+
 type handler struct {
 	upstream         *url.URL
 	client           *http.Client
 	maxRequestBytes  int64
 	maxResponseBytes int64
 	apiKeys          []APIKey
+	toolPolicies     map[string]map[string]bool
 	logger           *slog.Logger
 }
 
@@ -108,6 +121,31 @@ func New(cfg Config) (http.Handler, error) {
 		seenKeyIDs[key.ID] = struct{}{}
 		seenKeyHashes[key.SHA256] = struct{}{}
 	}
+	if len(cfg.ToolPolicies) > 1000 {
+		return nil, errors.New("at most 1000 tool policies are supported")
+	}
+	toolPolicies := make(map[string]map[string]bool, len(cfg.ToolPolicies))
+	seenToolPolicies := make(map[[2]string]struct{}, len(cfg.ToolPolicies))
+	for _, policy := range cfg.ToolPolicies {
+		if !validAPIKeyID.MatchString(policy.ClientID) {
+			return nil, errors.New("tool policy client identifier must contain only letters, digits, dot, underscore, or hyphen and be at most 64 characters")
+		}
+		if !validToolName.MatchString(policy.Tool) {
+			return nil, errors.New("tool policy tool name must contain only letters, digits, dot, underscore, or hyphen and be at most 128 characters")
+		}
+		if _, exists := seenKeyIDs[policy.ClientID]; !exists {
+			return nil, errors.New("tool policy client identifier must match a configured API key identifier")
+		}
+		key := [2]string{policy.ClientID, policy.Tool}
+		if _, exists := seenToolPolicies[key]; exists {
+			return nil, errors.New("tool policies must be unique per client and tool")
+		}
+		seenToolPolicies[key] = struct{}{}
+		if toolPolicies[policy.ClientID] == nil {
+			toolPolicies[policy.ClientID] = make(map[string]bool)
+		}
+		toolPolicies[policy.ClientID][policy.Tool] = policy.Allow
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
 	return &handler{
@@ -122,6 +160,7 @@ func New(cfg Config) (http.Handler, error) {
 		maxRequestBytes:  cfg.MaxRequestBytes,
 		maxResponseBytes: cfg.MaxResponseBytes,
 		apiKeys:          append([]APIKey(nil), cfg.APIKeys...),
+		toolPolicies:     toolPolicies,
 		logger:           cfg.Logger,
 	}, nil
 }
@@ -180,6 +219,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, requestID, started, http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
+	if status := h.authorizeToolCall(requestBody, clientID); status != 0 {
+		reason := "authorization_denied"
+		if status == http.StatusBadRequest {
+			reason = "invalid_tool_call"
+		}
+		h.writeError(w, r, requestID, started, status, reason)
+		return
+	}
 
 	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.upstream.String(), bytes.NewReader(requestBody))
 	if err != nil {
@@ -219,6 +266,75 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("write gateway response", "request_id", requestID, "reason", "client_write_failed")
 	}
 	h.logger.Info("mcp request completed", "request_id", requestID, "client_id", clientID, "method", r.Method, "path", r.URL.Path, "status", response.StatusCode, "latency_ms", time.Since(started).Milliseconds())
+}
+
+func (h *handler) authorizeToolCall(body []byte, clientID string) int {
+	request, ok := decodeUniqueJSONObject(body)
+	if !ok {
+		return http.StatusBadRequest
+	}
+	methodValue, present := request["method"]
+	if !present {
+		return 0
+	}
+	var method string
+	if err := json.Unmarshal(methodValue, &method); err != nil {
+		return http.StatusBadRequest
+	}
+	if method != "tools/call" {
+		return 0
+	}
+	paramsValue, present := request["params"]
+	if !present {
+		return http.StatusBadRequest
+	}
+	params, ok := decodeUniqueJSONObject(paramsValue)
+	if !ok {
+		return http.StatusBadRequest
+	}
+	nameValue, present := params["name"]
+	if !present {
+		return http.StatusBadRequest
+	}
+	var name string
+	if err := json.Unmarshal(nameValue, &name); err != nil || !validToolName.MatchString(name) {
+		return http.StatusBadRequest
+	}
+	if !h.toolPolicies[clientID][name] {
+		return http.StatusForbidden
+	}
+	return 0
+}
+
+func decodeUniqueJSONObject(value []byte) (map[string]json.RawMessage, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, false
+	}
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		token, err = decoder.Token()
+		name, isString := token.(string)
+		if err != nil || !isString {
+			return nil, false
+		}
+		if _, duplicate := fields[name]; duplicate {
+			return nil, false
+		}
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, false
+		}
+		fields[name] = raw
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, false
+	}
+	if token, err = decoder.Token(); err != io.EOF {
+		return nil, false
+	}
+	return fields, true
 }
 
 func (h *handler) authenticate(values []string) (string, bool) {
