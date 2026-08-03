@@ -29,6 +29,7 @@ func main() {
 		MaxResponseBytes: cfg.MaxResponseBytes,
 		APIKeys:          gatewayAPIKeys(cfg.APIKeys),
 		ToolPolicies:     gatewayToolPolicies(cfg.ToolPolicies),
+		RateLimits:       gatewayRateLimits(cfg.RateLimits),
 		Logger:           logger,
 	})
 	if err != nil {
@@ -77,6 +78,19 @@ func gatewayToolPolicies(policies []config.ToolPolicy) []gateway.ToolPolicy {
 	converted := make([]gateway.ToolPolicy, len(policies))
 	for index, policy := range policies {
 		converted[index] = gateway.ToolPolicy{ClientID: policy.ClientID, Tool: policy.Tool, Allow: policy.Allow}
+	}
+	return converted
+}
+
+func gatewayRateLimits(limits []config.RateLimit) []gateway.RateLimit {
+	converted := make([]gateway.RateLimit, len(limits))
+	for index, limit := range limits {
+		converted[index] = gateway.RateLimit{
+			ClientID:       limit.ClientID,
+			Tool:           limit.Tool,
+			Capacity:       limit.Capacity,
+			RefillInterval: limit.RefillInterval,
+		}
 	}
 	return converted
 }

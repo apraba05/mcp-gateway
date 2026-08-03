@@ -139,6 +139,7 @@ func TestLoadParsesToolPoliciesAndRejectsInvalidEntries(t *testing.T) {
 	}
 
 	base["MCP_GATEWAY_TOOL_POLICIES"] = "client-a:search=allow,client-a:delete=deny,client-b:search=allow"
+	base["MCP_GATEWAY_TOOL_RATE_LIMITS"] = "client-a:search=10/1s,client-b:search=10/1s"
 	values, err := config.Load(func(key string) string { return base[key] })
 	if err != nil {
 		t.Fatalf("load valid tool policies: %v", err)

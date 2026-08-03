@@ -69,6 +69,7 @@ func TestProxyRejectsToolCallWithoutAValidNameBeforeUpstream(t *testing.T) {
 		MaxResponseBytes: 1024,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		ToolPolicies:     []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
+		RateLimits:       []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 100, RefillInterval: time.Second}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -106,6 +107,7 @@ func TestProxyRejectsMalformedJSONBeforeUpstream(t *testing.T) {
 		MaxResponseBytes: 1024,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		ToolPolicies:     []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
+		RateLimits:       []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 100, RefillInterval: time.Second}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -143,6 +145,7 @@ func TestProxyRejectsDuplicateJSONRPCMethodBeforeUpstream(t *testing.T) {
 		MaxResponseBytes: 1024,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		ToolPolicies:     []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
+		RateLimits:       []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 100, RefillInterval: time.Second}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -183,6 +186,7 @@ func TestProxyPermitsAllowedToolCallAndPreservesBody(t *testing.T) {
 		MaxResponseBytes: 1024,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		ToolPolicies:     []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
+		RateLimits:       []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 100, RefillInterval: time.Second}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -220,6 +224,7 @@ func TestProxyDeniesUnknownToolByDefaultWithoutCallingUpstream(t *testing.T) {
 		MaxResponseBytes: 1024,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		ToolPolicies:     []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
+		RateLimits:       []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 100, RefillInterval: time.Second}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {

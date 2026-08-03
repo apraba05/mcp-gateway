@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 18 milestone adds deny-by-default per-client, per-tool authorization to hashed API-key authentication, the bounded transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 19 milestone adds bounded per-client, per-tool token buckets and explicit retry metadata to deny-by-default authorization, hashed API-key authentication, the bounded transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
 
 ## Quickstart
 
@@ -20,6 +20,9 @@ read -rsp 'Gateway API key: ' MCP_CLIENT_KEY; echo
 export MCP_GATEWAY_API_KEYS="local-demo=$(printf %s "$MCP_CLIENT_KEY" | sha256sum | cut -d' ' -f1)"
 # Unlisted client/tool pairs and explicit deny entries cannot call upstream.
 export MCP_GATEWAY_TOOL_POLICIES='local-demo:weather.lookup=allow,local-demo:filesystem.delete=deny'
+# Every allowed client/tool pair has exactly one token bucket. This bucket
+# starts with 10 tokens and refills one token per second.
+export MCP_GATEWAY_TOOL_RATE_LIMITS='local-demo:weather.lookup=10/1s'
 go run ./cmd/mcp-gateway
 ```
 
@@ -49,11 +52,11 @@ curl -i http://127.0.0.1:8080/healthz
 
 A valid inbound `X-Request-ID` (`A-Z`, `a-z`, digits, `.`, `_`, or `-`; at most 128 characters) is preserved. Missing or unsafe IDs are replaced with a cryptographically random ID. The selected ID is sent upstream and returned to the client.
 
-Missing, invalid, empty, whitespace-only, ambiguous repeated/comma-joined, and over-256-byte gateway keys return a generic `401` without an upstream call. Explicitly denied and unlisted `tools/call` pairs return a generic `403`; malformed JSON, top-level JSON-RPC batch arrays (not currently supported), ambiguous duplicate JSON-RPC fields, and tool calls without one safe 1–128 character tool name return a generic `400`. These failures occur before the upstream call and do not reflect tool names, arguments, or credentials. Other HTTP methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads, credentials, or upstream diagnostics.
+Missing, invalid, empty, whitespace-only, ambiguous repeated/comma-joined, and over-256-byte gateway keys return a generic `401` without an upstream call. Explicitly denied and unlisted `tools/call` pairs return a generic `403`; malformed JSON, top-level JSON-RPC batch arrays (not currently supported), ambiguous duplicate JSON-RPC fields, and tool calls without one safe 1–128 character tool name return a generic `400`. An exhausted permitted tool bucket returns generic `429` before upstream with integer-seconds `Retry-After` (rounded up, minimum 1) and `X-RateLimit-Retry-After-Ms` (rounded up, minimum 1) headers. A permitted attempt consumes a token even if upstream later fails. Buckets are isolated by configured client ID and tool; non-`tools/call` methods do not consume tokens. These failures occur before the upstream call and do not reflect tool names, arguments, or credentials. Other HTTP methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads, credentials, or upstream diagnostics.
 
 ## Configuration
 
-All settings are validated before the listener starts. Every setting except `MCP_GATEWAY_TOOL_POLICIES` is required; omitting tool policies intentionally denies every `tools/call`. Durations use Go syntax such as `500ms`, `10s`, or `1m` and must be positive and no greater than five minutes.
+All settings are validated before the listener starts. `MCP_GATEWAY_TOOL_POLICIES` and `MCP_GATEWAY_TOOL_RATE_LIMITS` may both be omitted to deny every `tools/call`. Every allow policy otherwise requires exactly one matching rate limit; deny and unknown pairs cannot have one. Durations use Go syntax such as `500ms`, `10s`, or `1m` and must be positive and no greater than five minutes.
 
 | Environment variable | Meaning |
 | --- | --- |
@@ -67,14 +70,15 @@ All settings are validated before the listener starts. Every setting except `MCP
 | `MCP_GATEWAY_MAX_RESPONSE_BYTES` | Maximum upstream response body in bytes (1–67,108,864). |
 | `MCP_GATEWAY_API_KEYS` | Required comma-separated `safe-client-id=sha256-hex` entries. IDs use 1–64 letters, digits, `.`, `_`, or `-`; IDs and hashes must be unique; at most 1,000 entries. |
 | `MCP_GATEWAY_TOOL_POLICIES` | Optional comma-separated `client-id:tool=allow\|deny` entries. Client IDs must identify configured API keys; tool names use 1–128 letters, digits, `.`, `_`, or `-`; each client/tool pair is unique; at most 1,000 entries. Empty/unset means all `tools/call` requests are denied. |
+| `MCP_GATEWAY_TOOL_RATE_LIMITS` | Comma-separated `client-id:tool=capacity/refill-interval` entries, one for every allow policy and none for deny/unknown pairs. Capacity is 1–100,000,000; interval is positive and at most five minutes; pairs are unique; at most 1,000 fixed buckets. Example: `local-demo:weather.lookup=10/1s`. |
 
 ## Observability and safety
 
-Logs are newline-delimited JSON emitted to stdout. Successful request completion records contain the safe client ID, request ID, HTTP method, path, status, and latency. Authentication and authorization failures use fixed reason codes and never log the presented credential, tool name, or arguments. Request and response payloads, authorization values, gateway keys, and URL credentials are never logged.
+Logs are newline-delimited JSON emitted to stdout. Successful request completion records contain the safe client ID, request ID, HTTP method, path, status, and latency. Authentication, authorization, and rate-limit failures use fixed reason codes and never log the presented credential, tool name, or arguments. Request and response payloads, authorization values, gateway keys, and URL credentials are never logged. Runtime rate-limit state has fixed startup-bounded cardinality: request-controlled client IDs or tool names never allocate buckets.
 
 Use independently generated high-entropy API keys: plain SHA-256 digests do not protect weak, guessable secrets from offline guessing. Restrict access to the configuration environment because its hashes are authentication material. The quickstart supplies curl's credential header through standard input rather than exposing the raw key in curl's process arguments.
 
-The gateway currently exposes liveness rather than upstream readiness. Rate limiting and audit chaining are planned later milestones. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
+The gateway currently exposes liveness rather than upstream readiness. Rate limits are process-local and reset on restart; distributed deployments need a shared limiter if fleet-wide enforcement is required. Audit chaining is planned for a later milestone. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
 
 ## Architecture
 

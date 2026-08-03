@@ -10,11 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +30,13 @@ var validToolName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 const statusClientClosedRequest = 499
 
 const maxBodyBytes int64 = 64 * 1024 * 1024
+
+// maxRateLimitCapacity and maxRateLimitInterval bound a single token
+// bucket's configuration so a misconfigured or malicious value cannot
+// request unbounded memory or overflow duration arithmetic during refill.
+const maxRateLimitCapacity = 100_000_000
+
+const maxRateLimitInterval = 5 * time.Minute
 
 var hopByHopHeaders = map[string]struct{}{
 	"Connection":          {},
@@ -49,7 +58,11 @@ type Config struct {
 	MaxResponseBytes int64
 	APIKeys          []APIKey
 	ToolPolicies     []ToolPolicy
+	RateLimits       []RateLimit
 	Logger           *slog.Logger
+	// Clock defaults to time.Now when nil. Tests may inject a deterministic
+	// clock; production always uses the default.
+	Clock func() time.Time
 }
 
 // APIKey identifies a client without retaining its raw credential. SHA256 is
@@ -68,6 +81,17 @@ type ToolPolicy struct {
 	Allow    bool
 }
 
+// RateLimit bounds one authenticated client's tools/call rate for one MCP
+// tool with a token bucket that starts full, holds at most Capacity tokens,
+// and refills one token every RefillInterval. Every allow ToolPolicy must
+// have exactly one matching RateLimit; deny policies must have none.
+type RateLimit struct {
+	ClientID       string
+	Tool           string
+	Capacity       uint32
+	RefillInterval time.Duration
+}
+
 type handler struct {
 	upstream         *url.URL
 	client           *http.Client
@@ -75,6 +99,7 @@ type handler struct {
 	maxResponseBytes int64
 	apiKeys          []APIKey
 	toolPolicies     map[string]map[string]bool
+	rateLimiters     map[string]map[string]*tokenBucket
 	logger           *slog.Logger
 }
 
@@ -146,6 +171,60 @@ func New(cfg Config) (http.Handler, error) {
 		}
 		toolPolicies[policy.ClientID][policy.Tool] = policy.Allow
 	}
+	if len(cfg.RateLimits) > 1000 {
+		return nil, errors.New("at most 1000 rate limits are supported")
+	}
+	allowedPairs := make(map[[2]string]struct{}, len(cfg.ToolPolicies))
+	deniedPairs := make(map[[2]string]struct{}, len(cfg.ToolPolicies))
+	for _, policy := range cfg.ToolPolicies {
+		pair := [2]string{policy.ClientID, policy.Tool}
+		if policy.Allow {
+			allowedPairs[pair] = struct{}{}
+		} else {
+			deniedPairs[pair] = struct{}{}
+		}
+	}
+	rateLimiters := make(map[string]map[string]*tokenBucket, len(cfg.RateLimits))
+	seenRateLimits := make(map[[2]string]struct{}, len(cfg.RateLimits))
+	clock := cfg.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	for _, limit := range cfg.RateLimits {
+		if !validAPIKeyID.MatchString(limit.ClientID) {
+			return nil, errors.New("rate limit client identifier must contain only letters, digits, dot, underscore, or hyphen and be at most 64 characters")
+		}
+		if !validToolName.MatchString(limit.Tool) {
+			return nil, errors.New("rate limit tool name must contain only letters, digits, dot, underscore, or hyphen and be at most 128 characters")
+		}
+		if limit.Capacity < 1 || limit.Capacity > maxRateLimitCapacity {
+			return nil, fmt.Errorf("rate limit capacity must be between 1 and %d", maxRateLimitCapacity)
+		}
+		if limit.RefillInterval <= 0 || limit.RefillInterval > maxRateLimitInterval {
+			return nil, fmt.Errorf("rate limit refill interval must be a positive duration no greater than %s", maxRateLimitInterval)
+		}
+		pair := [2]string{limit.ClientID, limit.Tool}
+		if _, exists := seenRateLimits[pair]; exists {
+			return nil, errors.New("rate limits must be unique per client and tool")
+		}
+		if _, allowed := allowedPairs[pair]; !allowed {
+			if _, denied := deniedPairs[pair]; denied {
+				return nil, errors.New("rate limits must not be configured for a denied tool policy")
+			}
+			return nil, errors.New("rate limits must not be configured without a matching allow tool policy")
+		}
+		seenRateLimits[pair] = struct{}{}
+		if rateLimiters[limit.ClientID] == nil {
+			rateLimiters[limit.ClientID] = make(map[string]*tokenBucket)
+		}
+		rateLimiters[limit.ClientID][limit.Tool] = newTokenBucket(limit.Capacity, limit.RefillInterval, clock)
+	}
+	for pair := range allowedPairs {
+		if _, exists := seenRateLimits[pair]; !exists {
+			return nil, errors.New("every allowed tool policy requires exactly one matching rate limit")
+		}
+	}
+
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
 	return &handler{
@@ -161,6 +240,7 @@ func New(cfg Config) (http.Handler, error) {
 		maxResponseBytes: cfg.MaxResponseBytes,
 		apiKeys:          append([]APIKey(nil), cfg.APIKeys...),
 		toolPolicies:     toolPolicies,
+		rateLimiters:     rateLimiters,
 		logger:           cfg.Logger,
 	}, nil
 }
@@ -219,13 +299,31 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, requestID, started, http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
-	if status := h.authorizeToolCall(requestBody, clientID); status != 0 {
+	toolName, status := h.authorizeToolCall(requestBody, clientID)
+	if status != 0 {
 		reason := "authorization_denied"
 		if status == http.StatusBadRequest {
 			reason = "invalid_tool_call"
 		}
 		h.writeError(w, r, requestID, started, status, reason)
 		return
+	}
+	if toolName != "" {
+		allowed, retryAfter := h.rateLimiters[clientID][toolName].allow()
+		if !allowed {
+			retryMilliseconds := (retryAfter + time.Millisecond - 1) / time.Millisecond
+			if retryMilliseconds < 1 {
+				retryMilliseconds = 1
+			}
+			retrySeconds := (retryAfter + time.Second - 1) / time.Second
+			if retrySeconds < 1 {
+				retrySeconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(retrySeconds), 10))
+			w.Header().Set("X-RateLimit-Retry-After-Ms", strconv.FormatInt(int64(retryMilliseconds), 10))
+			h.writeError(w, r, requestID, started, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
 	}
 
 	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.upstream.String(), bytes.NewReader(requestBody))
@@ -268,42 +366,42 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("mcp request completed", "request_id", requestID, "client_id", clientID, "method", r.Method, "path", r.URL.Path, "status", response.StatusCode, "latency_ms", time.Since(started).Milliseconds())
 }
 
-func (h *handler) authorizeToolCall(body []byte, clientID string) int {
+func (h *handler) authorizeToolCall(body []byte, clientID string) (string, int) {
 	request, ok := decodeUniqueJSONObject(body)
 	if !ok {
-		return http.StatusBadRequest
+		return "", http.StatusBadRequest
 	}
 	methodValue, present := request["method"]
 	if !present {
-		return 0
+		return "", 0
 	}
 	var method string
 	if err := json.Unmarshal(methodValue, &method); err != nil {
-		return http.StatusBadRequest
+		return "", http.StatusBadRequest
 	}
 	if method != "tools/call" {
-		return 0
+		return "", 0
 	}
 	paramsValue, present := request["params"]
 	if !present {
-		return http.StatusBadRequest
+		return "", http.StatusBadRequest
 	}
 	params, ok := decodeUniqueJSONObject(paramsValue)
 	if !ok {
-		return http.StatusBadRequest
+		return "", http.StatusBadRequest
 	}
 	nameValue, present := params["name"]
 	if !present {
-		return http.StatusBadRequest
+		return "", http.StatusBadRequest
 	}
 	var name string
 	if err := json.Unmarshal(nameValue, &name); err != nil || !validToolName.MatchString(name) {
-		return http.StatusBadRequest
+		return "", http.StatusBadRequest
 	}
 	if !h.toolPolicies[clientID][name] {
-		return http.StatusForbidden
+		return "", http.StatusForbidden
 	}
-	return 0
+	return name, 0
 }
 
 func decodeUniqueJSONObject(value []byte) (map[string]json.RawMessage, bool) {
