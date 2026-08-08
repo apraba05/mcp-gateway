@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 21 milestone adds readiness/draining semantics, bounded process-local admission, and narrowly scoped safe-operation retries to payload-safe audit logs, per-tool controls, hashed authentication, and the bounded transparent proxy.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 22 milestone adds bounded protocol/authentication fuzzing and a reproducible one-vCPU load measurement to the readiness, backpressure, safe retries, payload-safe audit logs, per-tool controls, hashed authentication, and bounded transparent proxy.
 
 ## Quickstart
 
@@ -109,13 +109,44 @@ The executable loads typed configuration, constructs a bounded `http.Server`, ma
 
 ## Verification
 
+The standard deterministic gate is:
+
 ```bash
-gofmt -w gateway internal cmd
-go test ./...
-go test -race ./...
-go vet ./...
-go build ./cmd/mcp-gateway
+GOMAXPROCS=1 gofmt -w gateway internal cmd
+GOMAXPROCS=1 go test -p=1 -count=1 ./...
+GOMAXPROCS=1 go test -p=1 -race -count=1 ./...
+GOMAXPROCS=1 go vet ./...
+GOMAXPROCS=1 go build ./cmd/mcp-gateway
 ```
+
+Two fuzz targets exercise exported HTTP behavior at the protocol/policy and authentication boundaries. Each fuzz input is capped at 4 KiB; use one worker and an explicit wall-time bound on constrained hosts:
+
+```bash
+GOMAXPROCS=1 go test -p=1 ./gateway -run '^(FuzzServeHTTPBoundaries|FuzzAuthenticationHeader)$' -count=1
+GOMAXPROCS=1 go test -p=1 ./gateway -run '^$' -fuzz '^FuzzServeHTTPBoundaries$' -fuzztime=30s -parallel=1
+GOMAXPROCS=1 go test -p=1 ./gateway -run '^$' -fuzz '^FuzzAuthenticationHeader$' -fuzztime=30s -parallel=1
+```
+
+On 2026-08-08, bounded five-second runs completed 6,738 protocol/policy executions (2 new interesting inputs) and 56,063 authentication executions without a failure. Fuzzing increases confidence but does not prove the absence of parser, authorization, or denial-of-service defects.
+
+### Reproducible local load measurement
+
+The benchmark sends permitted `tools/call` requests through the exported gateway handler to a loopback `httptest` upstream. It verifies every status but applies no timing threshold, so host noise changes measurements rather than causing a flaky test failure.
+
+```bash
+GOMAXPROCS=1 go test -p=1 ./gateway -run '^$' \
+  -bench '^BenchmarkGatewayServeHTTP(Sequential|Parallel)$' \
+  -benchtime=2000x -count=3 -cpu=1
+```
+
+Observed on 2026-08-08 with Linux 6.8, Go 1.26.5, one available vCPU (AMD EPYC 9354P host), and 3.8 GiB RAM:
+
+| Path | Three-run mean range | Median run throughput | Sequential latency percentiles |
+| --- | ---: | ---: | --- |
+| Sequential | 63.6–66.3 µs/op | 15,604 requests/s | p50 53.4 µs, p95 88.8 µs, p99 228.9 µs |
+| `RunParallel` constrained to one CPU | 62.0–62.8 µs/op | 16,022 requests/s | Not sampled |
+
+These are local microbenchmark observations, not production capacity or an SLO. They exclude external network latency, TLS termination, a real upstream implementation, client socket handling, multi-process coordination, and durable audit storage. The gateway still buffers admitted request/response bodies; aggregate memory scales with configured body and in-flight caps. Admission, rate limits, and the audit chain are process-local and reset on restart. JSON-RPC batches remain unsupported. The standard-library-only module had no third-party dependencies to enumerate; `staticcheck`, `govulncheck`, `gosec`, and `gitleaks` were unavailable on the measurement host, so Go tests/race/vet, focused fuzzing, dependency inspection, targeted secret patterns, and independent review form the published gate.
 
 ## License
 
