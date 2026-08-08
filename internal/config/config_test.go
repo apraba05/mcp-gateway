@@ -104,6 +104,7 @@ func TestLoadParsesTypedConfiguration(t *testing.T) {
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
 		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
+		"MCP_GATEWAY_AUDIT_REDACT":       "client_id,tool",
 	}
 
 	got, err := config.Load(func(key string) string { return environment[key] })
@@ -118,6 +119,9 @@ func TestLoadParsesTypedConfiguration(t *testing.T) {
 	}
 	if got.MaxRequestBytes != 65536 || got.MaxResponseBytes != 131072 {
 		t.Errorf("byte cap config = %#v", got)
+	}
+	if len(got.RedactAuditMetadata) != 2 || got.RedactAuditMetadata[0] != "client_id" || got.RedactAuditMetadata[1] != "tool" {
+		t.Errorf("audit redactions = %#v", got.RedactAuditMetadata)
 	}
 }
 

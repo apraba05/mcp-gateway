@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 19 milestone adds bounded per-client, per-tool token buckets and explicit retry metadata to deny-by-default authorization, hashed API-key authentication, the bounded transparent proxy, correlation IDs, typed startup configuration, health endpoint, and payload-safe structured logs.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 20 milestone adds payload-safe, tamper-evident audit events to per-tool rate limits, deny-by-default authorization, hashed API-key authentication, the bounded transparent proxy, correlation IDs, typed startup configuration, and health checks.
 
 ## Quickstart
 
@@ -23,6 +23,8 @@ export MCP_GATEWAY_TOOL_POLICIES='local-demo:weather.lookup=allow,local-demo:fil
 # Every allowed client/tool pair has exactly one token bucket. This bucket
 # starts with 10 tokens and refills one token per second.
 export MCP_GATEWAY_TOOL_RATE_LIMITS='local-demo:weather.lookup=10/1s'
+# Optional: replace selected safe metadata before both logging and hashing.
+export MCP_GATEWAY_AUDIT_REDACT='client_id,tool'
 go run ./cmd/mcp-gateway
 ```
 
@@ -71,14 +73,19 @@ All settings are validated before the listener starts. `MCP_GATEWAY_TOOL_POLICIE
 | `MCP_GATEWAY_API_KEYS` | Required comma-separated `safe-client-id=sha256-hex` entries. IDs use 1–64 letters, digits, `.`, `_`, or `-`; IDs and hashes must be unique; at most 1,000 entries. |
 | `MCP_GATEWAY_TOOL_POLICIES` | Optional comma-separated `client-id:tool=allow\|deny` entries. Client IDs must identify configured API keys; tool names use 1–128 letters, digits, `.`, `_`, or `-`; each client/tool pair is unique; at most 1,000 entries. Empty/unset means all `tools/call` requests are denied. |
 | `MCP_GATEWAY_TOOL_RATE_LIMITS` | Comma-separated `client-id:tool=capacity/refill-interval` entries, one for every allow policy and none for deny/unknown pairs. Capacity is 1–100,000,000; interval is positive and at most five minutes; pairs are unique; at most 1,000 fixed buckets. Example: `local-demo:weather.lookup=10/1s`. |
+| `MCP_GATEWAY_AUDIT_REDACT` | Optional comma-separated unique fields to replace with `[REDACTED]` before logging and hashing: `request_id`, `client_id`, and/or `tool`. Empty means safe configured metadata is retained. |
 
 ## Observability and safety
 
-Logs are newline-delimited JSON emitted to stdout. Successful request completion records contain the safe client ID, request ID, HTTP method, path, status, and latency. Authentication, authorization, and rate-limit failures use fixed reason codes and never log the presented credential, tool name, or arguments. Request and response payloads, authorization values, gateway keys, and URL credentials are never logged. Runtime rate-limit state has fixed startup-bounded cardinality: request-controlled client IDs or tool names never allocate buckets.
+Logs are newline-delimited JSON emitted to stdout. Every handled `/mcp` request produces one `mcp audit event` after a request ID is available. Events contain the authenticated safe client ID (or empty for failed authentication), safe configured tool name when one was parsed, allow/deny decision, bounded result class and reason, HTTP status, latency, method/path, and correlation ID. Request and response payloads, tool arguments, presented credentials, authorization values, URL credentials, and upstream diagnostics are never logged. Optional metadata redaction happens before both output and hashing.
+
+Audit events carry a process-local sequence, previous hash, and SHA-256 event hash. The hash covers the sequence, previous hash, emitted/redacted request ID, client ID, tool, decision, result class, method, path, reason, status, and latency using the canonical JSON field order implemented by `auditCanonical`. Event emission and chain mutation share one mutex, so concurrent requests cannot fork or reorder the chain. The first event after each process start uses 64 zeroes as its previous hash; chain state is intentionally not persisted, so restarts begin a new verifiable segment. Copy logs to append-only external storage if restart continuity or stronger deletion resistance is required. Chaining detects field modification and insertion/reordering within a retained segment; it does not prevent deletion of an entire tail or compromise of the running process.
+
+Runtime rate-limit state has fixed startup-bounded cardinality: request-controlled client IDs or tool names never allocate buckets.
 
 Use independently generated high-entropy API keys: plain SHA-256 digests do not protect weak, guessable secrets from offline guessing. Restrict access to the configuration environment because its hashes are authentication material. The quickstart supplies curl's credential header through standard input rather than exposing the raw key in curl's process arguments.
 
-The gateway currently exposes liveness rather than upstream readiness. Rate limits are process-local and reset on restart; distributed deployments need a shared limiter if fleet-wide enforcement is required. Audit chaining is planned for a later milestone. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
+The gateway currently exposes liveness rather than upstream readiness. Rate limits are process-local and reset on restart; distributed deployments need a shared limiter if fleet-wide enforcement is required. The audit chain is process-local as described above. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
 
 ## Architecture
 

@@ -59,7 +59,10 @@ type Config struct {
 	APIKeys          []APIKey
 	ToolPolicies     []ToolPolicy
 	RateLimits       []RateLimit
-	Logger           *slog.Logger
+	// RedactAuditMetadata may contain request_id, client_id, and tool. Selected
+	// metadata is replaced with a fixed marker before logging and hashing.
+	RedactAuditMetadata []string
+	Logger              *slog.Logger
 	// Clock defaults to time.Now when nil. Tests may inject a deterministic
 	// clock; production always uses the default.
 	Clock func() time.Time
@@ -100,7 +103,7 @@ type handler struct {
 	apiKeys          []APIKey
 	toolPolicies     map[string]map[string]bool
 	rateLimiters     map[string]map[string]*tokenBucket
-	logger           *slog.Logger
+	audit            *auditChain
 }
 
 // New validates config and returns an MCP gateway HTTP handler.
@@ -120,6 +123,16 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	if cfg.Logger == nil {
 		return nil, errors.New("logger is required")
+	}
+	seenRedactions := make(map[string]struct{}, len(cfg.RedactAuditMetadata))
+	for _, field := range cfg.RedactAuditMetadata {
+		if field != "request_id" && field != "client_id" && field != "tool" {
+			return nil, errors.New("audit metadata redaction fields must be request_id, client_id, or tool")
+		}
+		if _, exists := seenRedactions[field]; exists {
+			return nil, errors.New("audit metadata redaction fields must be unique")
+		}
+		seenRedactions[field] = struct{}{}
 	}
 	if len(cfg.APIKeys) == 0 {
 		return nil, errors.New("at least one hashed API key is required")
@@ -241,7 +254,7 @@ func New(cfg Config) (http.Handler, error) {
 		apiKeys:          append([]APIKey(nil), cfg.APIKeys...),
 		toolPolicies:     toolPolicies,
 		rateLimiters:     rateLimiters,
-		logger:           cfg.Logger,
+		audit:            newAuditChain(cfg.Logger, cfg.RedactAuditMetadata),
 	}, nil
 }
 
@@ -281,31 +294,31 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	clientID, authenticated := h.authenticate(r.Header.Values("X-MCP-Gateway-Key"))
 	if len(h.apiKeys) > 0 && !authenticated {
-		h.writeError(w, r, requestID, started, http.StatusUnauthorized, "authentication_failed")
+		h.writeError(w, requestID, started, "", "", "deny", "denied", http.StatusUnauthorized, "authentication_failed")
 		return
 	}
 
 	if r.ContentLength > h.maxRequestBytes {
-		h.writeError(w, r, requestID, started, http.StatusRequestEntityTooLarge, "request_too_large")
+		h.writeError(w, requestID, started, clientID, "", "deny", "rejected", http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
 	requestBody, err := io.ReadAll(io.LimitReader(r.Body, h.maxRequestBytes+1))
 	if err != nil {
 		status, reason := classifyContextError(r.Context())
-		h.writeError(w, r, requestID, started, status, reason)
+		h.writeError(w, requestID, started, clientID, "", "deny", "rejected", status, reason)
 		return
 	}
 	if int64(len(requestBody)) > h.maxRequestBytes {
-		h.writeError(w, r, requestID, started, http.StatusRequestEntityTooLarge, "request_too_large")
+		h.writeError(w, requestID, started, clientID, "", "deny", "rejected", http.StatusRequestEntityTooLarge, "request_too_large")
 		return
 	}
 	toolName, status := h.authorizeToolCall(requestBody, clientID)
 	if status != 0 {
-		reason := "authorization_denied"
+		reason, result := "authorization_denied", "denied"
 		if status == http.StatusBadRequest {
-			reason = "invalid_tool_call"
+			reason, result = "invalid_tool_call", "rejected"
 		}
-		h.writeError(w, r, requestID, started, status, reason)
+		h.writeError(w, requestID, started, clientID, toolName, "deny", result, status, reason)
 		return
 	}
 	if toolName != "" {
@@ -321,14 +334,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(retrySeconds), 10))
 			w.Header().Set("X-RateLimit-Retry-After-Ms", strconv.FormatInt(int64(retryMilliseconds), 10))
-			h.writeError(w, r, requestID, started, http.StatusTooManyRequests, "rate_limited")
+			h.writeError(w, requestID, started, clientID, toolName, "deny", "rate_limited", http.StatusTooManyRequests, "rate_limited")
 			return
 		}
 	}
 
 	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.upstream.String(), bytes.NewReader(requestBody))
 	if err != nil {
-		http.Error(w, "gateway request failed", http.StatusBadGateway)
+		h.writeError(w, requestID, started, clientID, toolName, "allow", "upstream_error", http.StatusBadGateway, "upstream_error")
 		return
 	}
 	copyEndToEndHeaders(upstreamRequest.Header, r.Header)
@@ -338,7 +351,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	response, err := h.client.Do(upstreamRequest)
 	if err != nil {
 		status, reason := classifyUpstreamError(err)
-		h.writeError(w, r, requestID, started, status, reason)
+		h.writeError(w, requestID, started, clientID, toolName, "allow", "upstream_error", status, reason)
 		return
 	}
 	defer response.Body.Close()
@@ -346,11 +359,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, h.maxResponseBytes+1))
 	if err != nil {
 		status, reason := classifyUpstreamError(err)
-		h.writeError(w, r, requestID, started, status, reason)
+		h.writeError(w, requestID, started, clientID, toolName, "allow", "upstream_error", status, reason)
 		return
 	}
 	if int64(len(responseBody)) > h.maxResponseBytes {
-		h.writeError(w, r, requestID, started, http.StatusBadGateway, "upstream_response_too_large")
+		h.writeError(w, requestID, started, clientID, toolName, "allow", "upstream_error", http.StatusBadGateway, "upstream_response_too_large")
 		return
 	}
 
@@ -360,10 +373,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header()["Content-Type"] = nil
 	}
 	w.WriteHeader(response.StatusCode)
+	result, reason := resultClass(response.StatusCode), ""
 	if _, err := w.Write(responseBody); err != nil {
-		h.logger.Error("write gateway response", "request_id", requestID, "reason", "client_write_failed")
+		result, reason = "client_write_error", "client_write_failed"
 	}
-	h.logger.Info("mcp request completed", "request_id", requestID, "client_id", clientID, "method", r.Method, "path", r.URL.Path, "status", response.StatusCode, "latency_ms", time.Since(started).Milliseconds())
+	h.audit.record(requestID, clientID, toolName, "allow", result, response.StatusCode, time.Since(started).Milliseconds(), reason)
+}
+
+func resultClass(status int) string {
+	switch {
+	case status >= 200 && status < 400:
+		return "success"
+	case status >= 500:
+		return "upstream_error"
+	default:
+		return "client_error"
+	}
 }
 
 func (h *handler) authorizeToolCall(body []byte, clientID string) (string, int) {
@@ -399,7 +424,7 @@ func (h *handler) authorizeToolCall(body []byte, clientID string) (string, int) 
 		return "", http.StatusBadRequest
 	}
 	if !h.toolPolicies[clientID][name] {
-		return "", http.StatusForbidden
+		return name, http.StatusForbidden
 	}
 	return name, 0
 }
@@ -456,10 +481,10 @@ func (h *handler) authenticate(values []string) (string, bool) {
 	return matchedID, matched == 1 && strings.TrimSpace(raw) != ""
 }
 
-// writeError logs a bounded, deterministic diagnostic and sends a generic
-// error body. It never reflects upstream or request payload content.
-func (h *handler) writeError(w http.ResponseWriter, r *http.Request, requestID string, started time.Time, status int, reason string) {
-	h.logger.Warn("mcp request completed", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "reason", reason, "latency_ms", time.Since(started).Milliseconds())
+// writeError logs a bounded audit event and sends a generic error body. It
+// never reflects upstream diagnostics, request payloads, or credentials.
+func (h *handler) writeError(w http.ResponseWriter, requestID string, started time.Time, clientID, tool, decision, resultClass string, status int, reason string) {
+	h.audit.record(requestID, clientID, tool, decision, resultClass, status, time.Since(started).Milliseconds(), reason)
 	http.Error(w, errorText(status), status)
 }
 

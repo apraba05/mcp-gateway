@@ -39,15 +39,16 @@ func TestProxyRateLimitsAllowedToolBeforeUpstreamAndRefillsDeterministically(t *
 	}
 	var logs bytes.Buffer
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:      upstream.URL,
-		UpstreamTimeout:  time.Second,
-		MaxRequestBytes:  1024,
-		MaxResponseBytes: 1024,
-		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
-		ToolPolicies:     []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
-		RateLimits:       []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 1, RefillInterval: 1500 * time.Millisecond}},
-		Logger:           slog.New(slog.NewJSONHandler(&logs, nil)),
-		Clock:            clock,
+		UpstreamURL:         upstream.URL,
+		UpstreamTimeout:     time.Second,
+		MaxRequestBytes:     1024,
+		MaxResponseBytes:    1024,
+		APIKeys:             []gateway.APIKey{{ID: "client-a", SHA256: hash}},
+		ToolPolicies:        []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
+		RateLimits:          []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 1, RefillInterval: 1500 * time.Millisecond}},
+		RedactAuditMetadata: []string{"tool"},
+		Logger:              slog.New(slog.NewJSONHandler(&logs, nil)),
+		Clock:               clock,
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)

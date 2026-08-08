@@ -65,6 +65,9 @@ func TestResponseWriteFailureDoesNotReflectRawDiagnosticInLogs(t *testing.T) {
 	if strings.Contains(logs.String(), "sensitive-adversarial-writer-detail") {
 		t.Fatalf("log reflected raw response-writer diagnostic: %q", logs.String())
 	}
+	if !strings.Contains(logs.String(), `"result_class":"client_write_error"`) {
+		t.Fatalf("audit result did not record client write failure: %q", logs.String())
+	}
 }
 
 func TestNewRejectsNonPositiveByteCaps(t *testing.T) {

@@ -23,14 +23,15 @@ func main() {
 		os.Exit(1)
 	}
 	handler, err := gateway.New(gateway.Config{
-		UpstreamURL:      cfg.UpstreamURL,
-		UpstreamTimeout:  cfg.UpstreamTimeout,
-		MaxRequestBytes:  cfg.MaxRequestBytes,
-		MaxResponseBytes: cfg.MaxResponseBytes,
-		APIKeys:          gatewayAPIKeys(cfg.APIKeys),
-		ToolPolicies:     gatewayToolPolicies(cfg.ToolPolicies),
-		RateLimits:       gatewayRateLimits(cfg.RateLimits),
-		Logger:           logger,
+		UpstreamURL:         cfg.UpstreamURL,
+		UpstreamTimeout:     cfg.UpstreamTimeout,
+		MaxRequestBytes:     cfg.MaxRequestBytes,
+		MaxResponseBytes:    cfg.MaxResponseBytes,
+		APIKeys:             gatewayAPIKeys(cfg.APIKeys),
+		ToolPolicies:        gatewayToolPolicies(cfg.ToolPolicies),
+		RateLimits:          gatewayRateLimits(cfg.RateLimits),
+		RedactAuditMetadata: append([]string(nil), cfg.RedactAuditMetadata...),
+		Logger:              logger,
 	})
 	if err != nil {
 		logger.Error("initialize gateway", "error", err)

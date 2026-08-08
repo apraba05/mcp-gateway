@@ -29,17 +29,18 @@ const maxBodyBytes = 64 * 1024 * 1024
 
 // Values is the complete typed runtime configuration.
 type Values struct {
-	UpstreamURL      string
-	ListenAddress    string
-	UpstreamTimeout  time.Duration
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	IdleTimeout      time.Duration
-	MaxRequestBytes  int64
-	MaxResponseBytes int64
-	APIKeys          []APIKey
-	ToolPolicies     []ToolPolicy
-	RateLimits       []RateLimit
+	UpstreamURL         string
+	ListenAddress       string
+	UpstreamTimeout     time.Duration
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	IdleTimeout         time.Duration
+	MaxRequestBytes     int64
+	MaxResponseBytes    int64
+	APIKeys             []APIKey
+	ToolPolicies        []ToolPolicy
+	RateLimits          []RateLimit
+	RedactAuditMetadata []string
 }
 
 // APIKey is a safe client identifier and a SHA-256 digest of its raw key.
@@ -141,7 +142,33 @@ func Load(getenv func(string) string) (Values, error) {
 		return Values{}, err
 	}
 	values.RateLimits = rateLimits
+	redactions, err := parseAuditRedactions(strings.TrimSpace(getenv("MCP_GATEWAY_AUDIT_REDACT")))
+	if err != nil {
+		return Values{}, err
+	}
+	values.RedactAuditMetadata = redactions
 	return values, nil
+}
+
+func parseAuditRedactions(value string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	if len(entries) > 3 {
+		return nil, errors.New("MCP_GATEWAY_AUDIT_REDACT supports request_id, client_id, and tool")
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry != "request_id" && entry != "client_id" && entry != "tool" {
+			return nil, errors.New("MCP_GATEWAY_AUDIT_REDACT supports request_id, client_id, and tool")
+		}
+		if _, exists := seen[entry]; exists {
+			return nil, errors.New("MCP_GATEWAY_AUDIT_REDACT entries must be unique")
+		}
+		seen[entry] = struct{}{}
+	}
+	return entries, nil
 }
 
 func parseAPIKeys(value string) ([]APIKey, error) {
