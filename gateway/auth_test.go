@@ -58,6 +58,7 @@ func TestProxyAuthenticatesHashedAPIKeyWithoutForwardingGatewayCredential(t *tes
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
@@ -95,6 +96,7 @@ func TestProxyDeniesMissingOrInvalidAPIKeyWithoutLeakingCredential(t *testing.T)
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		Logger:           slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
@@ -130,6 +132,7 @@ func TestNewRejectsEmptyAPIKeySet(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err == nil {
@@ -146,6 +149,7 @@ func TestNewRejectsDuplicateAPIKeyHashes(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys: []gateway.APIKey{
 			{ID: "client-a", SHA256: hash},
 			{ID: "client-b", SHA256: hash},
@@ -165,6 +169,7 @@ func TestNewRejectsZeroValueAPIKeyHash(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: [sha256.Size]byte{}}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
@@ -183,6 +188,7 @@ func TestProxyRejectsMultipleAPIKeyHeaderValues(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
@@ -210,6 +216,7 @@ func TestProxyRejectsCommaJoinedAPIKeyHeader(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
@@ -237,6 +244,7 @@ func TestProxyRejectsOversizedAPIKeyEvenIfItsHashIsConfigured(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
@@ -264,6 +272,7 @@ func TestProxyRejectsWhitespaceOnlyAPIKeyEvenIfItsHashIsConfigured(t *testing.T)
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys:          []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})

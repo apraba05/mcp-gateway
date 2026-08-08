@@ -27,6 +27,9 @@ var validToolName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // memory-constrained host, matching the maxTimeout sanity bound above.
 const maxBodyBytes = 64 * 1024 * 1024
 
+const maxInFlight = 100_000
+const maxSafeRetries = 3
+
 // Values is the complete typed runtime configuration.
 type Values struct {
 	UpstreamURL         string
@@ -37,6 +40,8 @@ type Values struct {
 	IdleTimeout         time.Duration
 	MaxRequestBytes     int64
 	MaxResponseBytes    int64
+	MaxInFlight         int
+	MaxSafeRetries      int
 	APIKeys             []APIKey
 	ToolPolicies        []ToolPolicy
 	RateLimits          []RateLimit
@@ -125,6 +130,16 @@ func Load(getenv func(string) string) (Values, error) {
 		}
 		*item.target = value
 	}
+	maxInFlightValue, err := strconv.ParseInt(strings.TrimSpace(getenv("MCP_GATEWAY_MAX_IN_FLIGHT")), 10, 32)
+	if err != nil || maxInFlightValue < 1 || maxInFlightValue > maxInFlight {
+		return Values{}, fmt.Errorf("MCP_GATEWAY_MAX_IN_FLIGHT must be an integer from 1 to %d", maxInFlight)
+	}
+	values.MaxInFlight = int(maxInFlightValue)
+	maxSafeRetriesValue, err := strconv.ParseInt(strings.TrimSpace(getenv("MCP_GATEWAY_MAX_SAFE_RETRIES")), 10, 8)
+	if err != nil || maxSafeRetriesValue < 0 || maxSafeRetriesValue > maxSafeRetries {
+		return Values{}, fmt.Errorf("MCP_GATEWAY_MAX_SAFE_RETRIES must be an integer from 0 to %d", maxSafeRetries)
+	}
+	values.MaxSafeRetries = int(maxSafeRetriesValue)
 	apiKeys, err := parseAPIKeys(strings.TrimSpace(getenv("MCP_GATEWAY_API_KEYS")))
 	if err != nil {
 		return Values{}, err

@@ -30,6 +30,7 @@ func newLimitsTestGateway(t *testing.T, upstreamURL string, maxRequestBytes, max
 		UpstreamTimeout:  upstreamTimeout,
 		MaxRequestBytes:  maxRequestBytes,
 		MaxResponseBytes: maxResponseBytes,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(logs, nil)),
 	})
 	if err != nil {
@@ -96,6 +97,7 @@ func TestNewRejectsNonPositiveByteCaps(t *testing.T) {
 				UpstreamTimeout:  time.Second,
 				MaxRequestBytes:  testCase.maxRequestBytes,
 				MaxResponseBytes: testCase.maxResponseBytes,
+				MaxInFlight:      64,
 				APIKeys:          testAPIKeys(),
 				Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 			})

@@ -24,6 +24,8 @@ func TestLoadParsesHashedAPIKeysAndRejectsPlaintextOrUnsafeIdentifiers(t *testin
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
 	}
 	base["MCP_GATEWAY_API_KEYS"] = "client-a=" + hex.EncodeToString(first[:]) + ",client_b=" + hex.EncodeToString(second[:])
@@ -103,6 +105,8 @@ func TestLoadParsesTypedConfiguration(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
 		"MCP_GATEWAY_AUDIT_REDACT":       "client_id,tool",
 	}
@@ -139,6 +143,8 @@ func TestLoadParsesToolPoliciesAndRejectsInvalidEntries(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]) + ",client-b=" + hex.EncodeToString(second[:]),
 	}
 
@@ -198,6 +204,8 @@ func TestLoadDefaultsToNoToolPoliciesWhenUnset(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]),
 	}
 
@@ -222,6 +230,8 @@ func TestLoadRejectsNonPositiveByteCaps(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=e0a5091e7f566a51018100473bf5078fe614e6dde73a7592c1161ecd6ec3826a",
 	}
 

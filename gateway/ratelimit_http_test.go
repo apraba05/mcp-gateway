@@ -43,6 +43,7 @@ func TestProxyRateLimitsAllowedToolBeforeUpstreamAndRefillsDeterministically(t *
 		UpstreamTimeout:     time.Second,
 		MaxRequestBytes:     1024,
 		MaxResponseBytes:    1024,
+		MaxInFlight:         64,
 		APIKeys:             []gateway.APIKey{{ID: "client-a", SHA256: hash}},
 		ToolPolicies:        []gateway.ToolPolicy{{ClientID: "client-a", Tool: "search", Allow: true}},
 		RateLimits:          []gateway.RateLimit{{ClientID: "client-a", Tool: "search", Capacity: 1, RefillInterval: 1500 * time.Millisecond}},
@@ -115,6 +116,7 @@ func TestProxyRateLimitBucketsAreIsolatedByClientAndTool(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1024,
 		MaxResponseBytes: 1024,
+		MaxInFlight:      64,
 		APIKeys: []gateway.APIKey{
 			{ID: "client-a", SHA256: hashA},
 			{ID: "client-b", SHA256: hashB},

@@ -28,6 +28,7 @@ func TestProxyPreservesAbsentUpstreamContentType(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -71,6 +72,7 @@ func TestProxyForwardsEndToEndMCPHeaders(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -105,6 +107,7 @@ func TestNewRejectsUpstreamURLWithoutHostname(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err == nil {
@@ -120,6 +123,7 @@ func TestNewRejectsUpstreamURLCredentials(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err == nil {
@@ -153,6 +157,7 @@ func TestProxyPreservesCompressedUpstreamBodyBytes(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -191,6 +196,7 @@ func TestProxyReturnsUpstreamRedirectWithoutFollowingIt(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -226,6 +232,7 @@ func TestProxyWritesPayloadSafeStructuredLog(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	if err != nil {
@@ -270,6 +277,7 @@ func TestProxyPreservesValidRequestID(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -301,6 +309,7 @@ func TestProxyGeneratesRequestIDWhenInboundIDIsUnsafe(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -334,6 +343,7 @@ func TestHealthEndpointReportsHealthyWithoutCallingUpstream(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		APIKeys:          testAPIKeys(),
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
@@ -377,6 +387,7 @@ func TestProxyPreservesRequestContentLength(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -420,6 +431,7 @@ func TestProxyForwardsJSONRPCRequestAndResponse(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	})
 	if err != nil {

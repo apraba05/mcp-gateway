@@ -26,6 +26,7 @@ func TestAuditMetadataRedactionPrecedesLoggingAndHashing(t *testing.T) {
 	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL: "http://127.0.0.1:1", UpstreamTimeout: time.Second,
 		MaxRequestBytes: 1024, MaxResponseBytes: 1024,
+		MaxInFlight:         64,
 		ToolPolicies:        []gateway.ToolPolicy{{ClientID: "legacy-test-client", Tool: "private.tool", Allow: false}},
 		RedactAuditMetadata: []string{"request_id", "client_id", "tool"},
 		Logger:              slog.New(slog.NewJSONHandler(&logs, nil)),
@@ -60,7 +61,8 @@ func TestAuditHashCoversEveryAuditMetadataFieldIncludingReason(t *testing.T) {
 	handler, err := newTestGateway(gateway.Config{
 		UpstreamURL: "http://127.0.0.1:1", UpstreamTimeout: time.Second,
 		MaxRequestBytes: 1024, MaxResponseBytes: 1024,
-		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+		MaxInFlight: 64,
+		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
@@ -113,6 +115,7 @@ func TestAuditRecordIncludesDeniedToolWithoutPayloadOrCredential(t *testing.T) {
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		ToolPolicies: []gateway.ToolPolicy{{
 			ClientID: "legacy-test-client", Tool: "filesystem.delete", Allow: false,
 		}},
@@ -160,6 +163,7 @@ func TestAuditRecordIncludesDecisionResultClassAndChainFieldsOnSuccess(t *testin
 		UpstreamTimeout:  time.Second,
 		MaxRequestBytes:  1 << 20,
 		MaxResponseBytes: 1 << 20,
+		MaxInFlight:      64,
 		Logger:           slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	if err != nil {

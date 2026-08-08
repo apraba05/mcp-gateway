@@ -13,11 +13,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +40,18 @@ const maxRateLimitCapacity = 100_000_000
 
 const maxRateLimitInterval = 5 * time.Minute
 
+// maxInFlightLimit bounds MaxInFlight so a misconfigured value cannot defeat
+// the purpose of admission control by allowing effectively unlimited
+// concurrency.
+const maxInFlightLimit = 100_000
+
+// backpressureRetryAfterSeconds is the fixed Retry-After value sent with a
+// pre-upstream 503 caused by admission-control backpressure. It is a
+// constant rather than a computed estimate because in-flight state is fixed
+// (a bounded counter), not time-based.
+const backpressureRetryAfterSeconds = 1
+const maxSafeRetriesLimit = 3
+
 var hopByHopHeaders = map[string]struct{}{
 	"Connection":          {},
 	"Keep-Alive":          {},
@@ -56,9 +70,16 @@ type Config struct {
 	UpstreamTimeout  time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
-	APIKeys          []APIKey
-	ToolPolicies     []ToolPolicy
-	RateLimits       []RateLimit
+	// MaxInFlight bounds concurrent /mcp POST admissions process-wide. It is
+	// required and strictly bounded: excess work is rejected before any
+	// upstream call.
+	MaxInFlight int
+	// MaxSafeRetries adds at most this many retries for the explicit safe
+	// JSON-RPC allowlist. Zero disables retries.
+	MaxSafeRetries int
+	APIKeys        []APIKey
+	ToolPolicies   []ToolPolicy
+	RateLimits     []RateLimit
 	// RedactAuditMetadata may contain request_id, client_id, and tool. Selected
 	// metadata is replaced with a fixed marker before logging and hashing.
 	RedactAuditMetadata []string
@@ -95,19 +116,55 @@ type RateLimit struct {
 	RefillInterval time.Duration
 }
 
-type handler struct {
+// Handler is the MCP gateway HTTP handler. It also exposes process-lifecycle
+// controls, such as Drain, that main uses around graceful shutdown.
+type Handler struct {
 	upstream         *url.URL
 	client           *http.Client
 	maxRequestBytes  int64
 	maxResponseBytes int64
+	upstreamTimeout  time.Duration
 	apiKeys          []APIKey
 	toolPolicies     map[string]map[string]bool
 	rateLimiters     map[string]map[string]*tokenBucket
 	audit            *auditChain
+	draining         atomic.Bool
+	maxInFlight      int64
+	inFlight         atomic.Int64
+	maxSafeRetries   int
+}
+
+// tryAcquireInFlight admits one unit of concurrent /mcp work if the
+// process-local bounded counter has capacity. It is race-safe: concurrent
+// callers never observe or leave the counter above maxInFlight, using a
+// compare-and-swap loop rather than a blind increment-then-check.
+func (h *Handler) tryAcquireInFlight() bool {
+	for {
+		current := h.inFlight.Load()
+		if current >= h.maxInFlight {
+			return false
+		}
+		if h.inFlight.CompareAndSwap(current, current+1) {
+			return true
+		}
+	}
+}
+
+func (h *Handler) releaseInFlight() {
+	h.inFlight.Add(-1)
+}
+
+// Drain marks the gateway as no longer accepting new work for readiness
+// purposes. It is safe to call concurrently with request handling. It does
+// not itself stop the listener or in-flight requests; main calls it before
+// starting graceful shutdown so /readyz can report 503 while the process
+// finishes existing work and external load balancers stop routing traffic.
+func (h *Handler) Drain() {
+	h.draining.Store(true)
 }
 
 // New validates config and returns an MCP gateway HTTP handler.
-func New(cfg Config) (http.Handler, error) {
+func New(cfg Config) (*Handler, error) {
 	upstream, err := url.ParseRequestURI(cfg.UpstreamURL)
 	if err != nil || (upstream.Scheme != "http" && upstream.Scheme != "https") || upstream.Hostname() == "" || upstream.User != nil {
 		return nil, errors.New("upstream URL must be an absolute HTTP(S) URL without user information")
@@ -120,6 +177,12 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	if cfg.MaxResponseBytes <= 0 || cfg.MaxResponseBytes > maxBodyBytes {
 		return nil, errors.New("max response bytes must be between 1 and 67108864")
+	}
+	if cfg.MaxInFlight <= 0 || cfg.MaxInFlight > maxInFlightLimit {
+		return nil, fmt.Errorf("max in-flight requests must be between 1 and %d", maxInFlightLimit)
+	}
+	if cfg.MaxSafeRetries < 0 || cfg.MaxSafeRetries > maxSafeRetriesLimit {
+		return nil, fmt.Errorf("max safe retries must be between 0 and %d", maxSafeRetriesLimit)
 	}
 	if cfg.Logger == nil {
 		return nil, errors.New("logger is required")
@@ -240,7 +303,7 @@ func New(cfg Config) (http.Handler, error) {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
-	return &handler{
+	return &Handler{
 		upstream: upstream,
 		client: &http.Client{
 			Timeout:   cfg.UpstreamTimeout,
@@ -251,6 +314,9 @@ func New(cfg Config) (http.Handler, error) {
 		},
 		maxRequestBytes:  cfg.MaxRequestBytes,
 		maxResponseBytes: cfg.MaxResponseBytes,
+		upstreamTimeout:  cfg.UpstreamTimeout,
+		maxInFlight:      int64(cfg.MaxInFlight),
+		maxSafeRetries:   cfg.MaxSafeRetries,
 		apiKeys:          append([]APIKey(nil), cfg.APIKeys...),
 		toolPolicies:     toolPolicies,
 		rateLimiters:     rateLimiters,
@@ -258,7 +324,7 @@ func New(cfg Config) (http.Handler, error) {
 	}, nil
 }
 
-func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -266,6 +332,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "{\"status\":\"ok\"}\n")
+		return
+	}
+	if r.URL.Path == "/readyz" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if h.draining.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "{\"status\":\"draining\"}\n")
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "{\"status\":\"ok\"}\n")
 		return
@@ -297,6 +379,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, requestID, started, "", "", "deny", "denied", http.StatusUnauthorized, "authentication_failed")
 		return
 	}
+	if h.draining.Load() {
+		w.Header().Set("Retry-After", strconv.Itoa(backpressureRetryAfterSeconds))
+		h.writeError(w, requestID, started, clientID, "", "deny", "unavailable", http.StatusServiceUnavailable, "draining")
+		return
+	}
+	if !h.tryAcquireInFlight() {
+		w.Header().Set("Retry-After", strconv.Itoa(backpressureRetryAfterSeconds))
+		h.writeError(w, requestID, started, clientID, "", "deny", "unavailable", http.StatusServiceUnavailable, "backpressure")
+		return
+	}
+	defer h.releaseInFlight()
 
 	if r.ContentLength > h.maxRequestBytes {
 		h.writeError(w, requestID, started, clientID, "", "deny", "rejected", http.StatusRequestEntityTooLarge, "request_too_large")
@@ -339,16 +432,33 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.upstream.String(), bytes.NewReader(requestBody))
-	if err != nil {
-		h.writeError(w, requestID, started, clientID, toolName, "allow", "upstream_error", http.StatusBadGateway, "upstream_error")
-		return
-	}
-	copyEndToEndHeaders(upstreamRequest.Header, r.Header)
-	upstreamRequest.Header.Del("X-MCP-Gateway-Key")
-	upstreamRequest.Header.Set("X-Request-ID", requestID)
+	safeToRetry := isSafeRetryRequest(requestBody)
+	retryContext, cancelRetries := context.WithTimeout(r.Context(), h.upstreamTimeout)
+	defer cancelRetries()
+	var response *http.Response
+	for attempt := 0; ; attempt++ {
+		upstreamRequest, requestErr := http.NewRequestWithContext(retryContext, http.MethodPost, h.upstream.String(), bytes.NewReader(requestBody))
+		if requestErr != nil {
+			err = requestErr
+			break
+		}
+		copyEndToEndHeaders(upstreamRequest.Header, r.Header)
+		upstreamRequest.Header.Del("X-MCP-Gateway-Key")
+		upstreamRequest.Header.Set("X-Request-ID", requestID)
 
-	response, err := h.client.Do(upstreamRequest)
+		response, err = h.client.Do(upstreamRequest)
+		if err != nil {
+			if safeToRetry && attempt < h.maxSafeRetries && r.Context().Err() == nil && retryableTransportError(err) {
+				continue
+			}
+			break
+		}
+		if safeToRetry && attempt < h.maxSafeRetries && r.Context().Err() == nil && retryableStatus(response.StatusCode) {
+			_ = response.Body.Close()
+			continue
+		}
+		break
+	}
 	if err != nil {
 		status, reason := classifyUpstreamError(err)
 		h.writeError(w, requestID, started, clientID, toolName, "allow", "upstream_error", status, reason)
@@ -380,6 +490,63 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.audit.record(requestID, clientID, toolName, "allow", result, response.StatusCode, time.Since(started).Milliseconds(), reason)
 }
 
+// isSafeRetryRequest deliberately uses an explicit method allowlist and
+// requires a non-null JSON-RPC id, so notifications and future methods are
+// never made retryable by naming convention alone.
+func isSafeRetryRequest(body []byte) bool {
+	request, ok := decodeUniqueJSONObject(body)
+	if !ok {
+		return false
+	}
+	var version string
+	versionValue, present := request["jsonrpc"]
+	if !present || json.Unmarshal(versionValue, &version) != nil || version != "2.0" {
+		return false
+	}
+	id, present := request["id"]
+	if !present || bytes.Equal(bytes.TrimSpace(id), []byte("null")) {
+		return false
+	}
+	idDecoder := json.NewDecoder(bytes.NewReader(id))
+	idDecoder.UseNumber()
+	var idValue any
+	if idDecoder.Decode(&idValue) != nil {
+		return false
+	}
+	switch idValue.(type) {
+	case string, json.Number:
+		// JSON-RPC request identifiers may be strings or numbers.
+	default:
+		return false
+	}
+	var method string
+	methodValue, present := request["method"]
+	if !present || json.Unmarshal(methodValue, &method) != nil {
+		return false
+	}
+	switch method {
+	case "ping", "tools/list", "resources/list", "resources/read", "prompts/list", "prompts/get":
+		return true
+	default:
+		return false
+	}
+}
+
+func retryableStatus(status int) bool {
+	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+func retryableTransportError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary())
+}
+
 func resultClass(status int) string {
 	switch {
 	case status >= 200 && status < 400:
@@ -391,7 +558,7 @@ func resultClass(status int) string {
 	}
 }
 
-func (h *handler) authorizeToolCall(body []byte, clientID string) (string, int) {
+func (h *Handler) authorizeToolCall(body []byte, clientID string) (string, int) {
 	request, ok := decodeUniqueJSONObject(body)
 	if !ok {
 		return "", http.StatusBadRequest
@@ -460,7 +627,7 @@ func decodeUniqueJSONObject(value []byte) (map[string]json.RawMessage, bool) {
 	return fields, true
 }
 
-func (h *handler) authenticate(values []string) (string, bool) {
+func (h *Handler) authenticate(values []string) (string, bool) {
 	if len(values) != 1 {
 		return "", false
 	}
@@ -483,7 +650,7 @@ func (h *handler) authenticate(values []string) (string, bool) {
 
 // writeError logs a bounded audit event and sends a generic error body. It
 // never reflects upstream diagnostics, request payloads, or credentials.
-func (h *handler) writeError(w http.ResponseWriter, requestID string, started time.Time, clientID, tool, decision, resultClass string, status int, reason string) {
+func (h *Handler) writeError(w http.ResponseWriter, requestID string, started time.Time, clientID, tool, decision, resultClass string, status int, reason string) {
 	h.audit.record(requestID, clientID, tool, decision, resultClass, status, time.Since(started).Milliseconds(), reason)
 	http.Error(w, errorText(status), status)
 }

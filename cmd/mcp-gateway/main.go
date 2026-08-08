@@ -27,6 +27,8 @@ func main() {
 		UpstreamTimeout:     cfg.UpstreamTimeout,
 		MaxRequestBytes:     cfg.MaxRequestBytes,
 		MaxResponseBytes:    cfg.MaxResponseBytes,
+		MaxInFlight:         cfg.MaxInFlight,
+		MaxSafeRetries:      cfg.MaxSafeRetries,
 		APIKeys:             gatewayAPIKeys(cfg.APIKeys),
 		ToolPolicies:        gatewayToolPolicies(cfg.ToolPolicies),
 		RateLimits:          gatewayRateLimits(cfg.RateLimits),
@@ -57,6 +59,7 @@ func main() {
 		}
 	case sig := <-signals:
 		logger.Info("shutdown requested", "signal", sig.String())
+		handler.Drain()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {

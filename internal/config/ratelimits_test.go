@@ -22,6 +22,8 @@ func rateLimitBaseEnvironment() map[string]string {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]) + ",client-b=" + hex.EncodeToString(second[:]),
 		"MCP_GATEWAY_TOOL_POLICIES":      "client-a:search=allow,client-a:delete=deny,client-b:search=allow",
 	}
@@ -98,6 +100,8 @@ func TestLoadDefaultsToNoRateLimitsWhenUnsetAndNoAllowPolicies(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]),
 	}
 
@@ -164,6 +168,8 @@ func TestLoadCapsToolRateLimitCardinalityAtOneThousand(t *testing.T) {
 		"MCP_GATEWAY_IDLE_TIMEOUT":       "30s",
 		"MCP_GATEWAY_MAX_REQUEST_BYTES":  "65536",
 		"MCP_GATEWAY_MAX_RESPONSE_BYTES": "131072",
+		"MCP_GATEWAY_MAX_IN_FLIGHT":      "64",
+		"MCP_GATEWAY_MAX_SAFE_RETRIES":   "1",
 		"MCP_GATEWAY_API_KEYS":           "client-a=" + hex.EncodeToString(first[:]),
 	}
 

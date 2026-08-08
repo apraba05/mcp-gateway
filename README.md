@@ -1,6 +1,6 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 20 milestone adds payload-safe, tamper-evident audit events to per-tool rate limits, deny-by-default authorization, hashed API-key authentication, the bounded transparent proxy, correlation IDs, typed startup configuration, and health checks.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 21 milestone adds readiness/draining semantics, bounded process-local admission, and narrowly scoped safe-operation retries to payload-safe audit logs, per-tool controls, hashed authentication, and the bounded transparent proxy.
 
 ## Quickstart
 
@@ -15,6 +15,9 @@ export MCP_GATEWAY_WRITE_TIMEOUT=15s
 export MCP_GATEWAY_IDLE_TIMEOUT=60s
 export MCP_GATEWAY_MAX_REQUEST_BYTES=1048576
 export MCP_GATEWAY_MAX_RESPONSE_BYTES=4194304
+export MCP_GATEWAY_MAX_IN_FLIGHT=64
+# Zero disables retries; at most 3 retries are allowed.
+export MCP_GATEWAY_MAX_SAFE_RETRIES=1
 # Store only a SHA-256 digest in gateway configuration. Use a high-entropy key.
 read -rsp 'Gateway API key: ' MCP_CLIENT_KEY; echo
 export MCP_GATEWAY_API_KEYS="local-demo=$(printf %s "$MCP_CLIENT_KEY" | sha256sum | cut -d' ' -f1)"
@@ -43,6 +46,7 @@ Check process health without contacting the upstream:
 
 ```bash
 curl -i http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/readyz
 ```
 
 ## HTTP contract
@@ -51,10 +55,13 @@ curl -i http://127.0.0.1:8080/healthz
 | --- | --- | --- |
 | `/mcp` | `POST` | Requires a valid `X-MCP-Gateway-Key`. `tools/call` requests also require an explicit allow policy for that client and tool; other valid JSON-RPC methods pass through. Permitted requests preserve the body and end-to-end MCP headers. The gateway credential and hop-by-hop HTTP headers are removed. |
 | `/healthz` | `GET` | Returns `200` and `{"status":"ok"}` without a client credential when the gateway process is serving. |
+| `/readyz` | `GET` | Intentionally credential-free for orchestrator probes. Returns `200` while new work is accepted and bounded `503` after shutdown draining begins. It never contacts the upstream or exposes configuration. |
 
 A valid inbound `X-Request-ID` (`A-Z`, `a-z`, digits, `.`, `_`, or `-`; at most 128 characters) is preserved. Missing or unsafe IDs are replaced with a cryptographically random ID. The selected ID is sent upstream and returned to the client.
 
 Missing, invalid, empty, whitespace-only, ambiguous repeated/comma-joined, and over-256-byte gateway keys return a generic `401` without an upstream call. Explicitly denied and unlisted `tools/call` pairs return a generic `403`; malformed JSON, top-level JSON-RPC batch arrays (not currently supported), ambiguous duplicate JSON-RPC fields, and tool calls without one safe 1–128 character tool name return a generic `400`. An exhausted permitted tool bucket returns generic `429` before upstream with integer-seconds `Retry-After` (rounded up, minimum 1) and `X-RateLimit-Retry-After-Ms` (rounded up, minimum 1) headers. A permitted attempt consumes a token even if upstream later fails. Buckets are isolated by configured client ID and tool; non-`tools/call` methods do not consume tokens. These failures occur before the upstream call and do not reflect tool names, arguments, or credentials. Other HTTP methods return `405`; unknown paths return `404`. Requests above the configured cap are rejected with `413` before an upstream call. Responses above their cap are fully discarded and replaced with `502`, so partial upstream success is never published. Hung upstreams map to `504`; malformed upstream HTTP and other transport failures map to `502`. Client cancellation propagates through the outbound request. Error bodies and logged reason codes are fixed and bounded rather than reflecting request payloads, credentials, or upstream diagnostics.
+
+At most `MCP_GATEWAY_MAX_IN_FLIGHT` authenticated MCP requests can occupy the process concurrently. Excess work and new work after draining begins are rejected before upstream with generic `503` and `Retry-After: 1`; liveness remains available while readiness reports draining. Safe retries use an explicit allowlist (`ping`, `tools/list`, `resources/list`, `resources/read`, `prompts/list`, and `prompts/get`) and require a non-null JSON-RPC request ID. They apply only to EOF/unexpected-EOF or network errors classified as temporary/timeout, plus upstream `502`, `503`, and `504`; permanent TLS verification and other permanent transport failures are not retried. Attempts reuse the exact bounded body and end-to-end headers and remain inside the configured upstream timeout. `tools/call`, `initialize`, notifications, malformed requests, cancellations, deadlines, and all unlisted/future methods are never retried. Discarded retry responses are closed and never exposed or logged.
 
 ## Configuration
 
@@ -70,6 +77,8 @@ All settings are validated before the listener starts. `MCP_GATEWAY_TOOL_POLICIE
 | `MCP_GATEWAY_IDLE_TIMEOUT` | Keep-alive idle timeout. |
 | `MCP_GATEWAY_MAX_REQUEST_BYTES` | Maximum inbound MCP request body in bytes (1–67,108,864). |
 | `MCP_GATEWAY_MAX_RESPONSE_BYTES` | Maximum upstream response body in bytes (1–67,108,864). |
+| `MCP_GATEWAY_MAX_IN_FLIGHT` | Required process-local concurrent MCP request cap (1–100,000). Excess work receives `503` before upstream. |
+| `MCP_GATEWAY_MAX_SAFE_RETRIES` | Required integer retry count from 0 (disabled) through 3, applied only to the explicit safe-method rules above. |
 | `MCP_GATEWAY_API_KEYS` | Required comma-separated `safe-client-id=sha256-hex` entries. IDs use 1–64 letters, digits, `.`, `_`, or `-`; IDs and hashes must be unique; at most 1,000 entries. |
 | `MCP_GATEWAY_TOOL_POLICIES` | Optional comma-separated `client-id:tool=allow\|deny` entries. Client IDs must identify configured API keys; tool names use 1–128 letters, digits, `.`, `_`, or `-`; each client/tool pair is unique; at most 1,000 entries. Empty/unset means all `tools/call` requests are denied. |
 | `MCP_GATEWAY_TOOL_RATE_LIMITS` | Comma-separated `client-id:tool=capacity/refill-interval` entries, one for every allow policy and none for deny/unknown pairs. Capacity is 1–100,000,000; interval is positive and at most five minutes; pairs are unique; at most 1,000 fixed buckets. Example: `local-demo:weather.lookup=10/1s`. |
@@ -85,7 +94,7 @@ Runtime rate-limit state has fixed startup-bounded cardinality: request-controll
 
 Use independently generated high-entropy API keys: plain SHA-256 digests do not protect weak, guessable secrets from offline guessing. Restrict access to the configuration environment because its hashes are authentication material. The quickstart supplies curl's credential header through standard input rather than exposing the raw key in curl's process arguments.
 
-The gateway currently exposes liveness rather than upstream readiness. Rate limits are process-local and reset on restart; distributed deployments need a shared limiter if fleet-wide enforcement is required. The audit chain is process-local as described above. Body caps bound per-request buffering, but a later concurrency milestone will add aggregate admission control.
+Readiness represents this process accepting work; it deliberately does not probe upstream health. Admission and rate limits are process-local, so multiple processes or replicas need an external host/fleet-wide concurrency budget and shared limiter. Rate limits reset on restart. The audit chain is process-local as described above. Body caps bound each admitted request/response; worst-case buffered body memory still scales with the configured admission cap.
 
 ## Architecture
 
@@ -93,10 +102,10 @@ The gateway currently exposes liveness rather than upstream readiness. Rate limi
 MCP client --HTTP JSON-RPC--> gateway handler --bounded HTTP client--> MCP upstream
                    |                |
                    |                +-- JSON structured logs (metadata only)
-                   +-- /healthz and X-Request-ID correlation
+                   +-- /healthz, /readyz, admission, and X-Request-ID
 ```
 
-The executable loads typed configuration, constructs a bounded `http.Server`, and handles `SIGINT`/`SIGTERM` with a ten-second graceful-shutdown deadline.
+The executable loads typed configuration, constructs a bounded `http.Server`, marks readiness draining on `SIGINT`/`SIGTERM`, and then uses a ten-second graceful-shutdown deadline. In-flight requests may finish during that window; new MCP work receives `503` until the listener closes.
 
 ## Verification
 
