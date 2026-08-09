@@ -136,7 +136,7 @@ Readiness represents this process accepting work; it deliberately does not probe
 
 ## Architecture
 
-Detailed request flow, state boundaries, container assumptions, and shutdown behavior are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Security assumptions, controls, residual risks, and non-goals are in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Detailed request flow, state boundaries, container assumptions, and shutdown behavior are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Security assumptions, controls, residual risks, and non-goals are in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). The [Days 15–24 retrospective](docs/RETROSPECTIVE.md) records the milestone history, verification scope, measured behavior, and remaining production work.
 
 ```text
 MCP client --HTTP JSON-RPC--> gateway handler --bounded HTTP client--> MCP upstream

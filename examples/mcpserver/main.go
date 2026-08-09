@@ -24,6 +24,26 @@ import (
 // gateway's own admission bounds so the demo never buffers unbounded input.
 const maxRequestBytes = 1 << 20
 
+// Bounded so a slow or silent loopback client cannot hold this fixture
+// server's listener goroutine open indefinitely, mirroring the gateway's
+// own bounded HTTP server.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 10 * time.Second
+	idleTimeout       = 30 * time.Second
+)
+
+func newServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
 func newHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", handleMCP)
@@ -145,7 +165,7 @@ func main() {
 		log.Fatalf("mcpserver: listen: %v", err)
 	}
 
-	server := &http.Server{Handler: newHandler()}
+	server := newServer(newHandler())
 	serverErrors := make(chan error, 1)
 	go func() {
 		serverErrors <- server.Serve(listener)

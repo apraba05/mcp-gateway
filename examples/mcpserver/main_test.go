@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestToolsListReturnsEchoTool(t *testing.T) {
@@ -134,6 +135,25 @@ func TestMalformedJSONReturnsParseError(t *testing.T) {
 	}
 	if decoded.Error == nil || decoded.Error.Code != -32700 {
 		t.Fatalf("error = %#v, want parse error -32700", decoded.Error)
+	}
+}
+
+func TestNewServerSetsBoundedTimeouts(t *testing.T) {
+	t.Parallel()
+
+	server := newServer(newHandler())
+
+	if server.ReadHeaderTimeout <= 0 || server.ReadHeaderTimeout > 30*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want a positive bound <= 30s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout <= 0 || server.ReadTimeout > 30*time.Second {
+		t.Fatalf("ReadTimeout = %v, want a positive bound <= 30s", server.ReadTimeout)
+	}
+	if server.WriteTimeout <= 0 || server.WriteTimeout > 30*time.Second {
+		t.Fatalf("WriteTimeout = %v, want a positive bound <= 30s", server.WriteTimeout)
+	}
+	if server.IdleTimeout <= 0 || server.IdleTimeout > 60*time.Second {
+		t.Fatalf("IdleTimeout = %v, want a positive bound <= 60s", server.IdleTimeout)
 	}
 }
 
