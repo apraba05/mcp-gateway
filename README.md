@@ -1,6 +1,20 @@
 # MCP Gateway
 
-MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. The Day 22 milestone adds bounded protocol/authentication fuzzing and a reproducible one-vCPU load measurement to the readiness, backpressure, safe retries, payload-safe audit logs, per-tool controls, hashed authentication, and bounded transparent proxy.
+MCP Gateway is a small, observable HTTP control point for Model Context Protocol JSON-RPC traffic. It combines readiness, backpressure, safe retries, payload-safe chained audit logs, per-tool policy and rate limits, hashed authentication, and a bounded transparent proxy. The v0.1 source candidate adds hardened container packaging, exercised example client/server binaries, architecture and threat-model documentation, a complete configuration reference, and a reproducible loopback demo. No tag or GitHub release has been created.
+
+## Install
+
+Build the static gateway from source with Go 1.23 or newer:
+
+```bash
+git clone https://github.com/apraba05/mcp-gateway.git
+cd mcp-gateway
+GOMAXPROCS=1 go test -p=1 ./...
+CGO_ENABLED=0 go build -trimpath -o ./bin/mcp-gateway ./cmd/mcp-gateway
+./bin/mcp-gateway
+```
+
+The final command intentionally fails closed until all required environment variables are supplied. See the [complete configuration reference](docs/CONFIGURATION.md).
 
 ## Quickstart
 
@@ -48,6 +62,30 @@ Check process health without contacting the upstream:
 curl -i http://127.0.0.1:8080/healthz
 curl -i http://127.0.0.1:8080/readyz
 ```
+
+### Reproducible local demo
+
+The demo builds and exercises the real gateway plus the standard-library-only [example MCP server and client](examples/README.md). It makes no external or paid calls, keeps the fixture value out of process arguments and logs, bounds runtime and output, and cleans up child processes:
+
+```bash
+python3 scripts/demo.py
+python3 scripts/demo.py --check
+```
+
+The checked transcript is [docs/demo-output.md](docs/demo-output.md).
+
+### Docker or Podman
+
+Build the multi-stage, shell-free, non-root image locally:
+
+```bash
+podman build -t mcp-gateway:local .   # or: docker build -t mcp-gateway:local .
+podman run --rm --read-only --cap-drop=all --security-opt=no-new-privileges \
+  --memory=128m --cpus=1 -p 127.0.0.1:8080:8080 \
+  --env-file ./gateway.env mcp-gateway:local
+```
+
+Inside a container, set `MCP_GATEWAY_LISTEN_ADDRESS=0.0.0.0:8080`. Do not put raw client keys in `gateway.env`; `MCP_GATEWAY_API_KEYS` contains digests only. The `scratch` image has no shell or HTTP probe utility, so configure the platform to probe `GET /healthz` and `GET /readyz` rather than adding a shell-based Docker `HEALTHCHECK`. The image includes the CA certificate bundle for HTTPS upstreams and runs as numeric UID/GID `65532:65532`.
 
 ## HTTP contract
 
@@ -97,6 +135,8 @@ Use independently generated high-entropy API keys: plain SHA-256 digests do not 
 Readiness represents this process accepting work; it deliberately does not probe upstream health. Admission and rate limits are process-local, so multiple processes or replicas need an external host/fleet-wide concurrency budget and shared limiter. Rate limits reset on restart. The audit chain is process-local as described above. Body caps bound each admitted request/response; worst-case buffered body memory still scales with the configured admission cap.
 
 ## Architecture
+
+Detailed request flow, state boundaries, container assumptions, and shutdown behavior are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Security assumptions, controls, residual risks, and non-goals are in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ```text
 MCP client --HTTP JSON-RPC--> gateway handler --bounded HTTP client--> MCP upstream

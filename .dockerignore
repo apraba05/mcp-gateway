@@ -1,0 +1,9 @@
+.git
+.gitignore
+Dockerfile*
+README.md
+LICENSE
+docs
+examples
+scripts
+**/*_test.go

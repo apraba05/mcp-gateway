@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">MCP Gateway architecture</title>
+  <desc id="desc">Clients send bounded authenticated JSON-RPC through policy, rate limit, retry, proxy, and audit controls to one MCP upstream.</desc>
+  <rect width="960" height="360" fill="#0b1020"/>
+  <g font-family="system-ui,sans-serif" fill="#e8eefc" text-anchor="middle">
+    <rect x="35" y="115" width="160" height="90" rx="12" fill="#24324f" stroke="#7aa2f7"/>
+    <text x="115" y="155" font-size="22">MCP clients</text><text x="115" y="182" font-size="14">HTTP JSON-RPC</text>
+    <rect x="255" y="55" width="450" height="210" rx="16" fill="#16213b" stroke="#9ece6a" stroke-width="2"/>
+    <text x="480" y="88" font-size="24">MCP Gateway</text>
+    <g font-size="15">
+      <rect x="285" y="112" width="115" height="54" rx="8" fill="#2b3d60"/><text x="342" y="144">Auth + caps</text>
+      <rect x="423" y="112" width="115" height="54" rx="8" fill="#2b3d60"/><text x="480" y="144">Tool policy</text>
+      <rect x="561" y="112" width="115" height="54" rx="8" fill="#2b3d60"/><text x="618" y="144">Rate limit</text>
+      <rect x="354" y="190" width="115" height="54" rx="8" fill="#2b3d60"/><text x="411" y="222">Safe retry</text>
+      <rect x="492" y="190" width="145" height="54" rx="8" fill="#2b3d60"/><text x="564" y="213">Chained audit</text><text x="564" y="232" font-size="12">metadata only</text>
+    </g>
+    <rect x="765" y="115" width="160" height="90" rx="12" fill="#24324f" stroke="#bb9af7"/>
+    <text x="845" y="155" font-size="22">MCP upstream</text><text x="845" y="182" font-size="14">fixed startup URL</text>
+    <text x="480" y="315" font-size="15" fill="#a9b1d6">/healthz · /readyz · draining · process-local admission</text>
+  </g>
+  <g stroke="#e0af68" stroke-width="4" fill="none"><path d="M195 160 H250"/><path d="M705 160 H760"/></g>
+  <g fill="#e0af68"><path d="M250 160 l-12 -7 v14z"/><path d="M760 160 l-12 -7 v14z"/></g>
+</svg>
